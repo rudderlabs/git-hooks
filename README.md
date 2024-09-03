@@ -26,11 +26,12 @@ If you haven't set GOPATH, the binary will typically be installed in `$HOME/go/b
 
 To configure Git to use Git Hooks:
 
-```
-git-hooks --configure
+```bash
+git-hooks config
 ```
 
 This command will:
+
 - Create the `~/.git-hooks` directory
 - Set up scripts for all Git hook types in this directory
 - Configure Git to use this directory for hooks
@@ -41,15 +42,15 @@ This command will:
 
 Once configured, Git Hooks will automatically handle Git hooks. When Git triggers a hook, it will run the corresponding script in `~/.git-hooks`, which in turn calls `git-hooks hook <hook-name>`.
 
-### Setting Up Specific Hooks
+### Adding Supported Hooks
 
-To set up specific hooks, use the `setup` command. For example, to set up the gitleaks pre-commit hook:
+To set up supported hooks, use the `add` command. For example, to set up the gitleaks pre-commit hook:
 
 ```bash
-git-hooks setup gitleaks
+git-hooks add gitleaks
 ```
 
-This will create a pre-commit hook that runs gitleaks to check for sensitive information in your commits.
+This will create a pre-commit hook on a global level that runs gitleaks to check for sensitive information in your commits.
 
 ### Custom Hook Scripts
 
