@@ -39,7 +39,14 @@ func configureGitHooks() error {
 	// Create a script for each Git hook
 	for _, hook := range gitHooks {
 		scriptContent := fmt.Sprintf(`#!/bin/sh
-git-hooks hook %s "$@"
+# Check if git-hooks is available
+if command -v git-hooks >/dev/null 2>&1; then
+    # If git-hooks is found, run it with the provided arguments
+    git-hooks hook %s "$@"
+else
+    echo "git-hooks not found. Skipping hook execution."
+    exit 1
+fi
 `, hook)
 
 		scriptPath := filepath.Join(hooksDir, hook)
