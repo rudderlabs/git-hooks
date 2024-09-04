@@ -3,10 +3,16 @@ package commands
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+
+	_ "embed"
 
 	"github.com/urfave/cli/v2"
 )
+
+//go:embed hooks/gitleaks.sh
+var gitLeaksScript []byte
 
 var Add = &cli.Command{
 	Name:  "add",
@@ -23,6 +29,11 @@ var Add = &cli.Command{
 }
 
 func addGitLeaks() error {
+	// Ensure gitleaks is installed and up-to-date
+	if err := installLatestGitleaks(); err != nil {
+		return fmt.Errorf("failed to install/update gitleaks: %w", err)
+	}
+
 	hooksDir := filepath.Join(os.Getenv("HOME"), ".git-hooks", "pre-commit.d")
 
 	// Create the pre-commit.d directory if it doesn't exist
@@ -33,15 +44,26 @@ func addGitLeaks() error {
 
 	// Create the gitleaks script
 	scriptPath := filepath.Join(hooksDir, "gitleaks")
-	script := `#!/bin/bash
-go run github.com/zricethezav/gitleaks/v8@v8.18.4 protect --staged
-`
 
-	err = os.WriteFile(scriptPath, []byte(script), 0755)
+	err = os.WriteFile(scriptPath, gitLeaksScript, 0755)
 	if err != nil {
 		return fmt.Errorf("failed to create gitleaks script: %w", err)
 	}
 
 	fmt.Printf("Gitleaks pre-commit hook installed at: %s\n", scriptPath)
+	return nil
+}
+
+func installLatestGitleaks() error {
+	cmd := exec.Command("go", "install", "github.com/zricethezav/gitleaks/v8@latest")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	fmt.Println("Installing/updating gitleaks...")
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to install/update gitleaks: %w", err)
+	}
+
+	fmt.Println("Gitleaks installed/updated successfully.")
 	return nil
 }
