@@ -1,13 +1,18 @@
 package commands
 
 import (
+	"embed"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"text/template"
 
 	"github.com/urfave/cli/v2"
 )
+
+//go:embed hook.sh
+var hookTemplate embed.FS
 
 var Config = &cli.Command{
 	Name:  "config",
@@ -36,24 +41,39 @@ func configureGitHooks() error {
 		return fmt.Errorf("failed to create hooks directory: %w", err)
 	}
 
+	gitHooksPath, err := exec.LookPath("git-hooks")
+	if err != nil {
+		return fmt.Errorf("git-hooks not found in PATH: %w", err)
+	}
+
+	// Parse the embedded template
+	tmpl, err := template.ParseFS(hookTemplate, "hook.sh")
+	if err != nil {
+		return fmt.Errorf("failed to parse hook template: %w", err)
+	}
+
 	// Create a script for each Git hook
 	for _, hook := range gitHooks {
-		scriptContent := fmt.Sprintf(`#!/bin/sh
-# Check if git-hooks is available
-if command -v git-hooks >/dev/null 2>&1; then
-    # If git-hooks is found, run it with the provided arguments
-    git-hooks hook %s "$@"
-else
-    echo "git-hooks not found. Skipping hook execution."
-	echo "Current PATH: $PATH"
-    exit 1
-fi
-`, hook)
-
 		scriptPath := filepath.Join(hooksDir, hook)
-		err = os.WriteFile(scriptPath, []byte(scriptContent), 0755)
+		file, err := os.Create(scriptPath)
 		if err != nil {
-			return fmt.Errorf("failed to create script for %s: %w", hook, err)
+			return fmt.Errorf("failed to create script file for %s: %w", hook, err)
+		}
+		defer file.Close()
+
+		err = tmpl.Execute(file, struct {
+			GitHooksPath string
+			HookName     string
+		}{
+			GitHooksPath: gitHooksPath,
+			HookName:     hook,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to execute template for %s: %w", hook, err)
+		}
+
+		if err := file.Chmod(0755); err != nil {
+			return fmt.Errorf("failed to set permissions for %s: %w", hook, err)
 		}
 	}
 
