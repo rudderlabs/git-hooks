@@ -45,6 +45,7 @@ if command -v git-hooks >/dev/null 2>&1; then
     git-hooks hook %s "$@"
 else
     echo "git-hooks not found. Skipping hook execution."
+	echo "Current PATH: $PATH"
     exit 1
 fi
 `, hook)
