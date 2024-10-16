@@ -28,12 +28,19 @@ func executeHook(hookName string) error {
 		return err
 	}
 
+	// 2. Execute local scripts
 	err = executeScriptsInDir(filepath.Join(".git-hooks", hookName+".d"))
 	if err != nil {
 		return err
 	}
 
-	// 3. Execute standard Git hook for backwards compatibility
+	// 3. Execute Husky scripts
+	err = executeScriptsInDir(filepath.Join(".husky", hookName))
+	if err != nil {
+		return err
+	}
+
+	// 4. Execute standard Git hook for backwards compatibility
 	gitDir := os.Getenv("GIT_DIR")
 	if gitDir == "" {
 		gitDir = ".git"
