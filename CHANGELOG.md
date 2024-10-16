@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/lvrach/git-hooks/compare/v0.1.0...v0.1.1) (2024-10-16)
+
+
+### Miscellaneous
+
+* add release please ([78801e0](https://github.com/lvrach/git-hooks/commit/78801e08017408717a71f0f4ee711231826c3e39))
+
 ## [0.1.0](https://github.com/lvrach/git-hooks/compare/v0.0.1...v0.1.0) (2024-10-16)
 
 
