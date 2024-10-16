@@ -132,7 +132,7 @@ brews:
       # Repository name.
       #
       # Templates: allowed.
-      name: git-hooks
+      name: homebrew-tap
 
       # Optionally a branch can be provided.
       #
@@ -158,5 +158,5 @@ brews:
         # above will be used as HEAD, allowing cross-repository pull requests.
         base:
           owner: lvrach
-          name: git-hooks
+          name: homebrew-tap
           branch: main
