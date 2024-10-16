@@ -10,14 +10,8 @@ import (
 
 func main() {
 	app := &cli.App{
-		Name:  "git-hooks-manager",
+		Name:  "git-hooks",
 		Usage: "Manage and execute Git hooks",
-		Flags: []cli.Flag{
-			&cli.BoolFlag{
-				Name:  "configure",
-				Usage: "Configure Git to use this tool for hooks",
-			},
-		},
 		Commands: []*cli.Command{
 			commands.Config,
 			commands.Implode,
