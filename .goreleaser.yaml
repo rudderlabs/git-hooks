@@ -55,26 +55,6 @@ brews:
     name: git-hooks
 
 
-    # IDs of the archives to use.
-    # Empty means all IDs.
-    ids:
-      - foo
-      - bar
-
-    # GOARM to specify which 32-bit arm version to use if there are multiple
-    # versions from the build section. Brew formulas support only one 32-bit
-    # version.
-    #
-    # Default: 6.
-    goarm: 6
-
-    # GOAMD64 to specify which amd64 version to use if there are multiple
-    # versions from the build section.
-    #
-    # Default: v1.
-    goamd64: v1
-
-
     # Headers to include in the `url` stanza.
     # This can be a more modern alternative to `download_strategy` in some
     # cases.
