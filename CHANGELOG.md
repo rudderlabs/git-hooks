@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/lvrach/git-hooks/compare/v0.1.1...v0.1.2) (2024-10-16)
+
+
+### Miscellaneous
+
+* empty ([0f07fdc](https://github.com/lvrach/git-hooks/commit/0f07fdcacccbf4af8def418c9cb575419bd10882))
+
 ## [0.1.1](https://github.com/lvrach/git-hooks/compare/v0.1.0...v0.1.1) (2024-10-16)
 
 
