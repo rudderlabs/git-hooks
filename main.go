@@ -20,6 +20,7 @@ func main() {
 		},
 		Commands: []*cli.Command{
 			commands.Config,
+			commands.Implode,
 			commands.Hooks,
 			commands.Add,
 		},

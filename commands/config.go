@@ -16,9 +16,17 @@ var hookTemplate embed.FS
 
 var Config = &cli.Command{
 	Name:  "config",
-	Usage: "",
+	Usage: "Configure git-hooks",
 	Action: func(c *cli.Context) error {
 		return configureGitHooks()
+	},
+}
+
+var Implode = &cli.Command{
+	Name:  "implode",
+	Usage: "Revert git-hooks configuration",
+	Action: func(c *cli.Context) error {
+		return implodeGitHooks()
 	},
 }
 
@@ -86,4 +94,76 @@ func configureGitHooks() error {
 	fmt.Printf("Git hooks configured to use directory: %s\n", hooksDir)
 	fmt.Println("Scripts created for all Git hooks")
 	return nil
+}
+
+func implodeGitHooks() error {
+	hooksDir := filepath.Join(os.Getenv("HOME"), ".git-hooks")
+
+	// Count and collect names of files not created by the tool
+	fileCount := 0
+	var filesToDelete []string
+	err := filepath.Walk(hooksDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			hookName := filepath.Base(path)
+			if !contains(gitHooks, hookName) {
+				fileCount++
+				filesToDelete = append(filesToDelete, path)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to analyze git-hooks directory: %w", err)
+	}
+
+	// Ask for user confirmation
+	if fileCount > 0 {
+		fmt.Printf("This will delete %d file(s) in %s:\n", fileCount, hooksDir)
+		for _, file := range filesToDelete {
+			fmt.Printf("  - %s\n", filepath.Base(file))
+		}
+		fmt.Print("Are you sure you want to proceed? (y/N): ")
+		var response string
+		_, err = fmt.Scanln(&response)
+		if err != nil {
+			return fmt.Errorf("failed to read user input: %w", err)
+		}
+
+		if response != "y" && response != "Y" {
+			fmt.Println("Operation cancelled.")
+			return nil
+		}
+	} else {
+		fmt.Println("No additional files found in the git-hooks directory.")
+	}
+
+	// Remove the git-hooks directory
+	err = os.RemoveAll(hooksDir)
+	if err != nil {
+		return fmt.Errorf("failed to remove git-hooks directory: %w", err)
+	}
+
+	// Reset Git's core.hooksPath configuration
+	cmd := exec.Command("git", "config", "--global", "--unset", "core.hooksPath")
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to unset Git hooks configuration: %w", err)
+	}
+
+	fmt.Println("Git hooks configuration has been reverted.")
+	fmt.Printf("Removed directory: %s\n", hooksDir)
+	fmt.Println("Reset Git's core.hooksPath configuration")
+	return nil
+}
+
+// Helper function to check if a string is in a slice
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
 }
