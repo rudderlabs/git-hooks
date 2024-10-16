@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/lvrach/git-hooks/compare/v0.1.3...v0.1.4) (2024-10-16)
+
+
+### Miscellaneous
+
+* fix token name ([af85e28](https://github.com/lvrach/git-hooks/commit/af85e28f9b8226948f6301d23ae4982faadfb791))
+
 ## [0.1.2](https://github.com/lvrach/git-hooks/compare/v0.1.1...v0.1.2) (2024-10-16)
 
 
