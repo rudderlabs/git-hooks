@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.5](https://github.com/lvrach/git-hooks/compare/v0.1.4...v0.1.5) (2024-10-17)
+
+
+### Miscellaneous
+
+* remove git from brew deps ([730e3a4](https://github.com/lvrach/git-hooks/commit/730e3a452fd281098fe9da4ba53f0d78eb27d263))
+
 ## [0.1.4](https://github.com/lvrach/git-hooks/compare/v0.1.3...v0.1.4) (2024-10-16)
 
 
