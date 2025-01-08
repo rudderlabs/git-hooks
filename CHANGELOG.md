@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.0.0 (2025-01-08)
+
+
+### Features
+
+* husky support ([641dd97](https://github.com/rudderlabs/git-hooks/commit/641dd9742a4467a0f44c62bddfd8800676840e69))
+* implement hierarchical Git hook configuration and execution ([253fa99](https://github.com/rudderlabs/git-hooks/commit/253fa99f8e2c1f7f5228e5009daec180ee4f0da5))
+* improve gitleaks hook ([cfe52fc](https://github.com/rudderlabs/git-hooks/commit/cfe52fcf810e41bd53d78ac7f26b4b5ab7afd055))
+* support impode command ([82ef820](https://github.com/rudderlabs/git-hooks/commit/82ef82041c69611ec926f042c4bf2135297f0def))
+
+
+### Bug Fixes
+
+* husky hooks execution ([69b3a1b](https://github.com/rudderlabs/git-hooks/commit/69b3a1bd93da2b37a0555899a566fbc118ca3cf3))
+* improve hook script robustness ([cae3750](https://github.com/rudderlabs/git-hooks/commit/cae37504654ecea4616fc66ecf1ef931bbcc167a))
+* README.md ([ea25d1d](https://github.com/rudderlabs/git-hooks/commit/ea25d1da09c67fd3947c5be1e8ba26898490250a))
+* run goreleaser only against tags ([6982032](https://github.com/rudderlabs/git-hooks/commit/6982032e50f79abccba8070626e580ca535699ba))
+* use full path for calling git-hooks ([64b580f](https://github.com/rudderlabs/git-hooks/commit/64b580fe88dc04e744fcdcf03ded7d4f29604cba))
+* use full path for gitleaks ([70a27c6](https://github.com/rudderlabs/git-hooks/commit/70a27c623c68ad0ceee129d5af1e5625fbe4266d))
+
 ## [0.2.0](https://github.com/rudderlabs/git-hooks/compare/v0.1.5...v0.2.0) (2024-12-12)
 
 
