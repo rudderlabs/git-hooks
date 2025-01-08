@@ -45,10 +45,8 @@ changelog:
       - "^docs:"
       - "^test:"
 
-
 brews:
-  -
-    # Name of the recipe
+  - # Name of the recipe
     #
     # Default: the project name.
     # Templates: allowed.
@@ -66,7 +64,6 @@ brews:
     # Example: https://docs.brew.sh/Formula-Cookbook#specifying-the-download-strategy-explicitly
     download_strategy: CurlDownloadStrategy
 
-
     # The project name and current git tag are used in the format string.
     #
     # Templates: allowed.
@@ -75,11 +72,10 @@ brews:
     # Directory inside the repository to put the formula.
     directory: Formula
 
-
     # Your app's homepage.
     #
     # Default: inferred from global metadata.
-    homepage: "https://github.com/lvrach/git-hooks/"
+    homepage: "https://github.com/rudderlabs/git-hooks/"
 
     # Setting this will prevent goreleaser to actually try to commit the updated
     # formula - instead, the formula file will be stored on the dist directory
@@ -90,12 +86,10 @@ brews:
     # Templates: allowed.
     skip_upload: false
 
-
     # Packages your package depends on.
     dependencies:
       - name: gitleaks
         type: optional
-
 
     # So you can `brew test` your formula.
     #
@@ -108,7 +102,7 @@ brews:
       # Repository owner.
       #
       # Templates: allowed.
-      owner: lvrach
+      owner: rudderlabs
 
       # Repository name.
       #
@@ -120,6 +114,5 @@ brews:
       # Default: default repository branch.
       # Templates: allowed.
       branch: main
-
 
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
