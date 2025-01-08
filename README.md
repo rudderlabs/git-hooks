@@ -94,3 +94,4 @@ When a Git hook is triggered, Git Hooks executes hooks in the following order:
 4. Standard Git hook in `$GIT_DIR/hooks/<hook-name>`
 
 This order ensures that you can have a cascading set of hooks, from the most global to the most specific, with Husky integration for projects that use it.
+
