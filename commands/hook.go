@@ -35,7 +35,7 @@ func executeHook(hookName string) error {
 	}
 
 	// 3. Execute Husky scripts
-	err = executeScriptsInDir(filepath.Join(".husky", hookName))
+	err = executeHuskyGitHook(filepath.Join(".husky/_", hookName))
 	if err != nil {
 		return err
 	}
@@ -77,6 +77,13 @@ func executeScript(path string) error {
 }
 
 func executeStandardGitHook(path string) error {
+	if _, err := os.Stat(path); err == nil {
+		return executeScript(path)
+	}
+	return nil // Hook doesn't exist, which is fine
+}
+
+func executeHuskyGitHook(path string) error {
 	if _, err := os.Stat(path); err == nil {
 		return executeScript(path)
 	}
