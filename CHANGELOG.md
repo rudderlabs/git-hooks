@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.2](https://github.com/rudderlabs/git-hooks/compare/v1.0.1...v1.0.2) (2025-09-23)
+
+
+### Bug Fixes
+
+* husky hooks legacy and modern dirs ([b30c802](https://github.com/rudderlabs/git-hooks/commit/b30c8023038a1aa65440bb3ee0ceeeb2ca1e3d12))
+
 ## 1.0.0 (2025-01-08)
 
 
