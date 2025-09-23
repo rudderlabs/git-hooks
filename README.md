@@ -6,10 +6,14 @@ Git Hooks is a flexible and powerful tool for managing and executing Git hooks a
 
 - Configure global Git hooks in `~/.git-hooks`
 - Support for local repository-specific hooks in `$GIT_DIR/.git-hooks`
-- Support for Husky hooks in `.husky` folder
+- Support for Husky hooks in `.husky` folder (both old `/.husky/_/` and new `/.husky/` formats)
 - Backwards compatibility with standard Git hooks
 - Hierarchical execution of hooks (global → local → Husky → standard)
 - Easy setup of specific hooks (e.g., gitleaks for pre-commit)
+- List installed hooks across all levels
+- Debug hook configuration and execution
+- Remove installed hooks
+- Robust error handling and execution
 
 ## Installation
 
@@ -75,6 +79,36 @@ git-hooks add gitleaks
 
 This will create a pre-commit hook on a global level that runs gitleaks to check for sensitive information in your commits.
 
+### Removing Hooks
+
+To remove installed hooks, use the `remove` command:
+
+```bash
+git-hooks remove gitleaks
+```
+
+### Listing Installed Hooks
+
+To see what hooks are currently installed:
+
+```bash
+git-hooks list
+```
+
+This will show all global and local hooks, including Husky and standard Git hooks.
+
+### Debugging Hook Issues
+
+If hooks aren't working as expected, use the debug commands:
+
+```bash
+# Debug overall configuration
+git-hooks debug config
+
+# Debug a specific hook
+git-hooks debug hook pre-commit
+```
+
 ### Custom Hook Scripts
 
 You can add custom hook scripts in the following locations:
@@ -90,7 +124,7 @@ When a Git hook is triggered, Git Hooks executes hooks in the following order:
 
 1. Global hooks in `~/.git-hooks/<hook-name>.d/`
 2. Local repository hooks in `$GIT_DIR/.git-hooks/<hook-name>.d/`
-3. Husky hooks in `.husky/<hook-name>/`
+3. Husky hooks in `.husky/<hook-name>` (new format) or `.husky/_/<hook-name>` (old format)
 4. Standard Git hook in `$GIT_DIR/hooks/<hook-name>`
 
 This order ensures that you can have a cascading set of hooks, from the most global to the most specific, with Husky integration for projects that use it.

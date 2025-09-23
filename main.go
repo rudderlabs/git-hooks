@@ -17,6 +17,9 @@ func main() {
 			commands.Implode,
 			commands.Hooks,
 			commands.Add,
+			commands.Remove,
+			commands.List,
+			commands.Debug,
 		},
 	}
 
