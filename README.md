@@ -6,7 +6,7 @@ Git Hooks is a flexible and powerful tool for managing and executing Git hooks a
 
 - Configure global Git hooks in `~/.git-hooks`
 - Support for local repository-specific hooks in `$GIT_DIR/.git-hooks`
-- Support for Husky hooks in `.husky` folder
+- Support for Husky hooks in `.husky` folder (both modern and legacy formats)
 - Backwards compatibility with standard Git hooks
 - Hierarchical execution of hooks (global → local → Husky → standard)
 - Easy setup of specific hooks (e.g., gitleaks for pre-commit)
@@ -90,7 +90,7 @@ When a Git hook is triggered, Git Hooks executes hooks in the following order:
 
 1. Global hooks in `~/.git-hooks/<hook-name>.d/`
 2. Local repository hooks in `$GIT_DIR/.git-hooks/<hook-name>.d/`
-3. Husky hooks in `.husky/<hook-name>/`
+3. Husky hooks in `.husky/<hook-name>` (modern) or `.husky/_/<hook-name>` (legacy)
 4. Standard Git hook in `$GIT_DIR/hooks/<hook-name>`
 
 This order ensures that you can have a cascading set of hooks, from the most global to the most specific, with Husky integration for projects that use it.

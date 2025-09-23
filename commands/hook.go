@@ -34,8 +34,8 @@ func executeHook(hookName string) error {
 		return err
 	}
 
-	// 3. Execute Husky scripts
-	err = executeHuskyGitHook(filepath.Join(".husky/_", hookName))
+	// 3. Execute Husky scripts (try both modern and legacy formats)
+	err = executeHuskyGitHooks(hookName)
 	if err != nil {
 		return err
 	}
@@ -77,15 +77,41 @@ func executeScript(path string) error {
 }
 
 func executeStandardGitHook(path string) error {
-	if _, err := os.Stat(path); err == nil {
-		return executeScript(path)
+	if info, err := os.Stat(path); err == nil {
+		// Check if it's a regular file and executable
+		if info.Mode().IsRegular() && (info.Mode()&0111) != 0 {
+			return executeScript(path)
+		}
+		// If it exists but is not executable, skip silently
+		return nil
 	}
 	return nil // Hook doesn't exist, which is fine
 }
 
+func executeHuskyGitHooks(hookName string) error {
+	// Try modern Husky format first (.husky/hookname)
+	modernPath := filepath.Join(".husky", hookName)
+	if err := executeHuskyGitHook(modernPath); err != nil {
+		return err
+	}
+	
+	// Try legacy Husky format (.husky/_/hookname)
+	legacyPath := filepath.Join(".husky/_", hookName)
+	if err := executeHuskyGitHook(legacyPath); err != nil {
+		return err
+	}
+	
+	return nil
+}
+
 func executeHuskyGitHook(path string) error {
-	if _, err := os.Stat(path); err == nil {
-		return executeScript(path)
+	if info, err := os.Stat(path); err == nil {
+		// Check if it's a regular file and executable
+		if info.Mode().IsRegular() && (info.Mode()&0111) != 0 {
+			return executeScript(path)
+		}
+		// If it exists but is not executable, skip silently
+		return nil
 	}
 	return nil // Hook doesn't exist, which is fine
 }
