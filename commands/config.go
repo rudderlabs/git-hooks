@@ -62,26 +62,8 @@ func configureGitHooks() error {
 
 	// Create a script for each Git hook
 	for _, hook := range gitHooks {
-		scriptPath := filepath.Join(hooksDir, hook)
-		file, err := os.Create(scriptPath)
-		if err != nil {
-			return fmt.Errorf("failed to create script file for %s: %w", hook, err)
-		}
-		defer file.Close()
-
-		err = tmpl.Execute(file, struct {
-			GitHooksPath string
-			HookName     string
-		}{
-			GitHooksPath: gitHooksPath,
-			HookName:     hook,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to execute template for %s: %w", hook, err)
-		}
-
-		if err := file.Chmod(0755); err != nil {
-			return fmt.Errorf("failed to set permissions for %s: %w", hook, err)
+		if err := createHookScript(hooksDir, hook, tmpl, gitHooksPath); err != nil {
+			return err
 		}
 	}
 
@@ -155,6 +137,32 @@ func implodeGitHooks() error {
 	fmt.Println("Git hooks configuration has been reverted.")
 	fmt.Printf("Removed directory: %s\n", hooksDir)
 	fmt.Println("Reset Git's core.hooksPath configuration")
+	return nil
+}
+
+func createHookScript(hooksDir, hook string, tmpl *template.Template, gitHooksPath string) error {
+	scriptPath := filepath.Join(hooksDir, hook)
+	file, err := os.Create(scriptPath)
+	if err != nil {
+		return fmt.Errorf("failed to create script file for %s: %w", hook, err)
+	}
+	defer file.Close()
+
+	err = tmpl.Execute(file, struct {
+		GitHooksPath string
+		HookName     string
+	}{
+		GitHooksPath: gitHooksPath,
+		HookName:     hook,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to execute template for %s: %w", hook, err)
+	}
+
+	if err := file.Chmod(0755); err != nil {
+		return fmt.Errorf("failed to set permissions for %s: %w", hook, err)
+	}
+
 	return nil
 }
 

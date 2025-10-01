@@ -70,9 +70,11 @@ func executeScriptsInDir(dir string) error {
 }
 
 func executeScript(path string) error {
-	cmd := exec.Command(path)
+	cmd := exec.Command(path, os.Args[2:]...)
+	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	cmd.Env = os.Environ()
 	return cmd.Run()
 }
 
