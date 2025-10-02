@@ -49,10 +49,12 @@ func configureGitHooks() error {
 		return fmt.Errorf("failed to create hooks directory: %w", err)
 	}
 
-	gitHooksPath, err := exec.LookPath("git-hooks")
+	gitHooksPath, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("git-hooks not found in PATH: %w", err)
+		return fmt.Errorf("failed to get executable path: %w", err)
 	}
+
+	fmt.Printf("Using git-hooks binary: %s\n", gitHooksPath)
 
 	// Parse the embedded template
 	tmpl, err := template.ParseFS(hookTemplate, "hook.sh")

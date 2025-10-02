@@ -15,6 +15,9 @@ import (
 //go:embed hooks/gitleaks.sh
 var gitLeaksScriptTemplate string
 
+//go:embed hooks/gitleaks-commit-msg.sh
+var gitLeaksCommitMsgTemplate string
+
 var Add = &cli.Command{
 	Name:  "add",
 	Usage: "adds a new git hook",
@@ -69,6 +72,39 @@ func addGitLeaks() error {
 	}
 
 	fmt.Printf("Gitleaks pre-commit hook installed at: %s\n", scriptPath)
+
+	// Install commit-msg hook
+	commitMsgDir := filepath.Join(os.Getenv("HOME"), ".git-hooks", "commit-msg.d")
+	err = os.MkdirAll(commitMsgDir, 0755)
+	if err != nil {
+		return fmt.Errorf("failed to create commit-msg.d directory: %w", err)
+	}
+
+	commitMsgPath := filepath.Join(commitMsgDir, "gitleaks")
+
+	tmpl2, err := template.New("gitleaks-commit-msg").Parse(gitLeaksCommitMsgTemplate)
+	if err != nil {
+		return fmt.Errorf("failed to parse gitleaks commit-msg template: %w", err)
+	}
+
+	file2, err := os.Create(commitMsgPath)
+	if err != nil {
+		return fmt.Errorf("failed to create gitleaks commit-msg file: %w", err)
+	}
+	defer file2.Close()
+
+	err = tmpl2.Execute(file2, map[string]string{"GitleaksPath": gitleaksPath})
+	if err != nil {
+		return fmt.Errorf("failed to execute gitleaks commit-msg template: %w", err)
+	}
+
+	err = os.Chmod(commitMsgPath, 0755)
+	if err != nil {
+		return fmt.Errorf("failed to set permissions for gitleaks commit-msg script: %w", err)
+	}
+
+	fmt.Printf("Gitleaks commit-msg hook installed at: %s\n", commitMsgPath)
+
 	return nil
 }
 
