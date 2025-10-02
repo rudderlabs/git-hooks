@@ -7,7 +7,7 @@ GITLEAKS_PATH="{{.GitleaksPath}}"
 
 COMMIT_MSG_FILE=$1
 
-GITLEAKS_PHRASE="Scanned for secrets using gitleaks"
+GITLEAKS_PHRASE="🔒 Scanned for secrets using gitleaks"
 
 # Append gitleaks scan info to commit message
 if [ -n "$COMMIT_MSG_FILE" ]; then

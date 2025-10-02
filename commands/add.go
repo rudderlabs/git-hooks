@@ -12,10 +12,10 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
-//go:embed hooks/gitleaks.sh
+//go:embed hooks/gitleaks/pre-commit.sh
 var gitLeaksScriptTemplate string
 
-//go:embed hooks/gitleaks-commit-msg.sh
+//go:embed hooks/gitleaks/commit-msg.sh
 var gitLeaksCommitMsgTemplate string
 
 var Add = &cli.Command{
