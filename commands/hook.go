@@ -87,7 +87,7 @@ func executeScript(path string) error {
 func executeStandardGitHook(path string) error {
 	if info, err := os.Stat(path); err == nil {
 		// Check if it's a regular file and executable
-		if info.Mode().IsRegular() && (info.Mode()&0111) != 0 {
+		if info.Mode().IsRegular() && (info.Mode()&0o111) != 0 {
 			return executeScript(path)
 		}
 		// If it exists but is not executable, skip silently
@@ -115,7 +115,7 @@ func executeHuskyGitHooks(hookName string) error {
 func executeHuskyGitHook(path string) error {
 	if info, err := os.Stat(path); err == nil {
 		// Check if it's a regular file and executable
-		if info.Mode().IsRegular() && (info.Mode()&0111) != 0 {
+		if info.Mode().IsRegular() && (info.Mode()&0o111) != 0 {
 			return executeScript(path)
 		}
 		// If it exists but is not executable, skip silently

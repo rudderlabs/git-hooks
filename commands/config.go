@@ -44,7 +44,7 @@ func configureGitHooks() error {
 	hooksDir := filepath.Join(os.Getenv("HOME"), ".git-hooks")
 
 	// Create the directory if it doesn't exist
-	err := os.MkdirAll(hooksDir, 0755)
+	err := os.MkdirAll(hooksDir, 0o755)
 	if err != nil {
 		return fmt.Errorf("creating hooks directory: %w", err)
 	}
@@ -167,7 +167,7 @@ func createHookScript(hooksDir, hook string, tmpl *template.Template, gitHooksPa
 		return fmt.Errorf("executing template for %s: %w", hook, err)
 	}
 
-	if err := file.Chmod(0755); err != nil {
+	if err := file.Chmod(0o755); err != nil {
 		return fmt.Errorf("setting permissions for %s: %w", hook, err)
 	}
 

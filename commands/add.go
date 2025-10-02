@@ -42,7 +42,7 @@ func addGitLeaks() error {
 	hooksDir := filepath.Join(os.Getenv("HOME"), ".git-hooks", "pre-commit.d")
 
 	// Create the pre-commit.d directory if it doesn't exist
-	err = os.MkdirAll(hooksDir, 0755)
+	err = os.MkdirAll(hooksDir, 0o755)
 	if err != nil {
 		return fmt.Errorf("creating pre-commit.d directory: %w", err)
 	}
@@ -66,7 +66,7 @@ func addGitLeaks() error {
 		return fmt.Errorf("executing gitleaks script template: %w", err)
 	}
 
-	err = os.Chmod(scriptPath, 0755)
+	err = os.Chmod(scriptPath, 0o755)
 	if err != nil {
 		return fmt.Errorf("setting permissions for gitleaks script: %w", err)
 	}
@@ -75,7 +75,7 @@ func addGitLeaks() error {
 
 	// Install commit-msg hook
 	commitMsgDir := filepath.Join(os.Getenv("HOME"), ".git-hooks", "commit-msg.d")
-	err = os.MkdirAll(commitMsgDir, 0755)
+	err = os.MkdirAll(commitMsgDir, 0o755)
 	if err != nil {
 		return fmt.Errorf("creating commit-msg.d directory: %w", err)
 	}
@@ -98,7 +98,7 @@ func addGitLeaks() error {
 		return fmt.Errorf("executing gitleaks commit-msg template: %w", err)
 	}
 
-	err = os.Chmod(commitMsgPath, 0755)
+	err = os.Chmod(commitMsgPath, 0o755)
 	if err != nil {
 		return fmt.Errorf("setting permissions for gitleaks commit-msg script: %w", err)
 	}
