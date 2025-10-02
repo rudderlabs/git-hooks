@@ -17,7 +17,6 @@ if [ -n "$COMMIT_MSG_FILE" ]; then
     else
         GITLEAKS_VERSION=$($GITLEAKS_PATH version | head -n1)
         echo "" >> "$COMMIT_MSG_FILE"
-        echo "## The following line was added automatically, please do not remove it" >> "$COMMIT_MSG_FILE"
         echo "$GITLEAKS_PHRASE $GITLEAKS_VERSION" >> "$COMMIT_MSG_FILE"
     fi
 fi
