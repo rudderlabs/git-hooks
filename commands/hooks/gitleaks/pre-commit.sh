@@ -6,7 +6,7 @@
 GITLEAKS_PATH="{{.GitleaksPath}}"
 
 # Run Gitleaks
-$GITLEAKS_PATH protect --no-banner --staged . 
+$GITLEAKS_PATH protect --no-banner --staged .
 
 # Check the exit code of Gitleaks
 if [ $? -ne 0 ]; then

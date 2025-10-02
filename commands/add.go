@@ -12,8 +12,11 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
-//go:embed hooks/gitleaks.sh
+//go:embed hooks/gitleaks/pre-commit.sh
 var gitLeaksScriptTemplate string
+
+//go:embed hooks/gitleaks/commit-msg.sh
+var gitLeaksCommitMsgTemplate string
 
 var Add = &cli.Command{
 	Name:  "add",
@@ -33,15 +36,15 @@ func addGitLeaks() error {
 	// Ensure gitleaks is installed and up-to-date
 	gitleaksPath, err := installLatestGitleaks()
 	if err != nil {
-		return fmt.Errorf("failed to install/update gitleaks: %w", err)
+		return fmt.Errorf("installing/updating gitleaks: %w", err)
 	}
 
 	hooksDir := filepath.Join(os.Getenv("HOME"), ".git-hooks", "pre-commit.d")
 
 	// Create the pre-commit.d directory if it doesn't exist
-	err = os.MkdirAll(hooksDir, 0755)
+	err = os.MkdirAll(hooksDir, 0o755)
 	if err != nil {
-		return fmt.Errorf("failed to create pre-commit.d directory: %w", err)
+		return fmt.Errorf("creating pre-commit.d directory: %w", err)
 	}
 
 	// Create the gitleaks script using the template
@@ -49,26 +52,59 @@ func addGitLeaks() error {
 
 	tmpl, err := template.New("gitleaks").Parse(gitLeaksScriptTemplate)
 	if err != nil {
-		return fmt.Errorf("failed to parse gitleaks script template: %w", err)
+		return fmt.Errorf("parsing gitleaks script template: %w", err)
 	}
 
 	file, err := os.Create(scriptPath)
 	if err != nil {
-		return fmt.Errorf("failed to create gitleaks script file: %w", err)
+		return fmt.Errorf("creating gitleaks script file: %w", err)
 	}
 	defer file.Close()
 
 	err = tmpl.Execute(file, map[string]string{"GitleaksPath": gitleaksPath})
 	if err != nil {
-		return fmt.Errorf("failed to execute gitleaks script template: %w", err)
+		return fmt.Errorf("executing gitleaks script template: %w", err)
 	}
 
-	err = os.Chmod(scriptPath, 0755)
+	err = os.Chmod(scriptPath, 0o755)
 	if err != nil {
-		return fmt.Errorf("failed to set permissions for gitleaks script: %w", err)
+		return fmt.Errorf("setting permissions for gitleaks script: %w", err)
 	}
 
 	fmt.Printf("Gitleaks pre-commit hook installed at: %s\n", scriptPath)
+
+	// Install commit-msg hook
+	commitMsgDir := filepath.Join(os.Getenv("HOME"), ".git-hooks", "commit-msg.d")
+	err = os.MkdirAll(commitMsgDir, 0o755)
+	if err != nil {
+		return fmt.Errorf("creating commit-msg.d directory: %w", err)
+	}
+
+	commitMsgPath := filepath.Join(commitMsgDir, "gitleaks")
+
+	tmpl2, err := template.New("gitleaks-commit-msg").Parse(gitLeaksCommitMsgTemplate)
+	if err != nil {
+		return fmt.Errorf("parsing gitleaks commit-msg template: %w", err)
+	}
+
+	file2, err := os.Create(commitMsgPath)
+	if err != nil {
+		return fmt.Errorf("creating gitleaks commit-msg file: %w", err)
+	}
+	defer file2.Close()
+
+	err = tmpl2.Execute(file2, map[string]string{"GitleaksPath": gitleaksPath})
+	if err != nil {
+		return fmt.Errorf("executing gitleaks commit-msg template: %w", err)
+	}
+
+	err = os.Chmod(commitMsgPath, 0o755)
+	if err != nil {
+		return fmt.Errorf("setting permissions for gitleaks commit-msg script: %w", err)
+	}
+
+	fmt.Printf("Gitleaks commit-msg hook installed at: %s\n", commitMsgPath)
+
 	return nil
 }
 
@@ -83,7 +119,7 @@ func installLatestGitleaks() (string, error) {
 
 		fmt.Println("Installing/updating gitleaks using Homebrew...")
 		if err := cmd.Run(); err != nil {
-			return "", fmt.Errorf("failed to install/update gitleaks with Homebrew: %w", err)
+			return "", fmt.Errorf("installing/updating gitleaks with Homebrew: %w", err)
 		}
 	} else {
 		// Homebrew is not available, fall back to go install
@@ -93,7 +129,7 @@ func installLatestGitleaks() (string, error) {
 
 		fmt.Println("Installing/updating gitleaks using go install...")
 		if err := cmd.Run(); err != nil {
-			return "", fmt.Errorf("failed to install/update gitleaks with go install: %w", err)
+			return "", fmt.Errorf("installing/updating gitleaks with go install: %w", err)
 		}
 	}
 
@@ -102,7 +138,7 @@ func installLatestGitleaks() (string, error) {
 	// Find the full path of gitleaks
 	gitleaksPath, err := exec.LookPath("gitleaks")
 	if err != nil {
-		return "", fmt.Errorf("failed to find gitleaks in PATH: %w", err)
+		return "", fmt.Errorf("finding gitleaks in PATH: %w", err)
 	}
 
 	return gitleaksPath, nil

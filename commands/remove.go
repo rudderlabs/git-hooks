@@ -32,7 +32,7 @@ func removeGitLeaks() error {
 			fmt.Println("Gitleaks pre-commit hook not found. Nothing to remove.")
 			return nil
 		}
-		return fmt.Errorf("failed to remove gitleaks script: %w", err)
+		return fmt.Errorf("removing gitleaks script: %w", err)
 	}
 
 	fmt.Printf("Gitleaks pre-commit hook removed from: %s\n", scriptPath)

@@ -70,16 +70,24 @@ func executeScriptsInDir(dir string) error {
 }
 
 func executeScript(path string) error {
-	cmd := exec.Command(path)
+	// Skip binary name (os.Args[0]), "hook" subcommand (os.Args[1]), and hook name (os.Args[2])
+	// Pass only the actual hook arguments starting from os.Args[3]
+	var args []string
+	if len(os.Args) > 3 {
+		args = os.Args[3:]
+	}
+	cmd := exec.Command(path, args...)
+	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	cmd.Env = os.Environ()
 	return cmd.Run()
 }
 
 func executeStandardGitHook(path string) error {
 	if info, err := os.Stat(path); err == nil {
 		// Check if it's a regular file and executable
-		if info.Mode().IsRegular() && (info.Mode()&0111) != 0 {
+		if info.Mode().IsRegular() && (info.Mode()&0o111) != 0 {
 			return executeScript(path)
 		}
 		// If it exists but is not executable, skip silently
@@ -94,20 +102,20 @@ func executeHuskyGitHooks(hookName string) error {
 	if err := executeHuskyGitHook(modernPath); err != nil {
 		return err
 	}
-	
+
 	// Try legacy Husky format (.husky/_/hookname)
 	legacyPath := filepath.Join(".husky/_", hookName)
 	if err := executeHuskyGitHook(legacyPath); err != nil {
 		return err
 	}
-	
+
 	return nil
 }
 
 func executeHuskyGitHook(path string) error {
 	if info, err := os.Stat(path); err == nil {
 		// Check if it's a regular file and executable
-		if info.Mode().IsRegular() && (info.Mode()&0111) != 0 {
+		if info.Mode().IsRegular() && (info.Mode()&0o111) != 0 {
 			return executeScript(path)
 		}
 		// If it exists but is not executable, skip silently
