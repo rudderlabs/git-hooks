@@ -3,11 +3,138 @@ package cleangit_test
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
 	cleangit "github.com/lvrach/git-hooks/internal/clean-local-git"
+	"github.com/stretchr/testify/require"
 )
+
+// Unit Tests
+
+func TestGetHooksPath_WithValue(t *testing.T) {
+	t.Log("Testing git config reads hooksPath correctly")
+
+	tempDir := t.TempDir()
+	setupGitRepo(t, tempDir)
+	setGitConfig(t, tempDir, "core.hooksPath", ".custom-hooks")
+
+	// Scan will internally call getHooksPath
+	repos, err := cleangit.Scan(context.Background(), tempDir, 1)
+	require.NoError(t, err)
+	require.Len(t, repos, 1)
+	require.Equal(t, ".custom-hooks", repos[0].CustomHooksPath)
+}
+
+func TestGetHooksPath_WithoutValue(t *testing.T) {
+	t.Log("Testing git config handles missing hooksPath")
+
+	tempDir := t.TempDir()
+	setupGitRepo(t, tempDir)
+
+	// Should not find repos without hooksPath
+	repos, err := cleangit.Scan(context.Background(), tempDir, 1)
+	require.NoError(t, err)
+	require.Len(t, repos, 0)
+}
+
+func TestGetHooksPath_InvalidRepo(t *testing.T) {
+	t.Log("Testing git config handles non-repo directory")
+
+	tempDir := t.TempDir()
+	// Create .git directory but don't initialize it properly
+	err := os.Mkdir(filepath.Join(tempDir, ".git"), 0o755)
+	require.NoError(t, err)
+
+	// Should not find invalid repos
+	repos, err := cleangit.Scan(context.Background(), tempDir, 1)
+	require.NoError(t, err)
+	require.Len(t, repos, 0)
+}
+
+func TestRemoveHooksPath_Success(t *testing.T) {
+	t.Log("Testing removal of hooksPath")
+
+	t.Log("Setting up git repository with hooksPath")
+	tempDir := t.TempDir()
+	setupGitRepo(t, tempDir)
+	setGitConfig(t, tempDir, "core.hooksPath", ".husky")
+
+	t.Log("Verifying hooksPath is set")
+	value, exists := getGitConfig(t, tempDir, "core.hooksPath")
+	require.True(t, exists)
+	require.Equal(t, ".husky", value)
+
+	t.Log("Scanning for repositories with hooksPath")
+	repos, err := cleangit.Scan(context.Background(), tempDir, 1)
+	require.NoError(t, err)
+	require.Len(t, repos, 1)
+
+	t.Log("Cleaning repositories")
+	summary := cleangit.Clean(context.Background(), repos)
+	require.Equal(t, 1, summary.ConfigsRemoved)
+	require.Len(t, summary.Results, 1)
+	require.True(t, summary.Results[0].Removed)
+	require.NoError(t, summary.Results[0].Error)
+
+	t.Log("Verifying hooksPath was removed")
+	_, exists = getGitConfig(t, tempDir, "core.hooksPath")
+	require.False(t, exists)
+}
+
+func TestRemoveHooksPath_AlreadyRemoved(t *testing.T) {
+	t.Log("Testing removal when hooksPath doesn't exist")
+
+	tempDir := t.TempDir()
+	setupGitRepo(t, tempDir)
+
+	// Manually create a repo struct with hooksPath (simulating stale data)
+	repo := cleangit.Repository{
+		Path:            tempDir,
+		ConfigPath:      filepath.Join(tempDir, ".git", "config"),
+		HasCustomHooks:  true,
+		CustomHooksPath: ".husky",
+	}
+
+	summary := cleangit.Clean(context.Background(), []cleangit.Repository{repo})
+	require.Equal(t, 1, summary.RepositoriesWithConfig)
+	// Should handle gracefully (git config --unset returns exit code 5 for non-existent key)
+	require.Len(t, summary.Results, 1)
+}
+
+func TestRemoveHooksPath_PreservesOtherCoreSettings(t *testing.T) {
+	t.Log("Testing that other core.* settings are preserved")
+
+	t.Log("Setting up git repository with multiple core settings")
+	tempDir := t.TempDir()
+	setupGitRepo(t, tempDir)
+	setGitConfig(t, tempDir, "core.hooksPath", ".husky")
+	setGitConfig(t, tempDir, "core.autocrlf", "input")
+	setGitConfig(t, tempDir, "core.ignorecase", "false")
+
+	t.Log("Scanning and cleaning repositories")
+	repos, err := cleangit.Scan(context.Background(), tempDir, 1)
+	require.NoError(t, err)
+
+	summary := cleangit.Clean(context.Background(), repos)
+	require.Equal(t, 1, summary.ConfigsRemoved)
+
+	t.Log("Verifying hooksPath was removed")
+	_, exists := getGitConfig(t, tempDir, "core.hooksPath")
+	require.False(t, exists)
+
+	t.Log("Verifying other core settings were preserved")
+	value, exists := getGitConfig(t, tempDir, "core.autocrlf")
+	require.True(t, exists)
+	require.Equal(t, "input", value)
+
+	value, exists = getGitConfig(t, tempDir, "core.ignorecase")
+	require.True(t, exists)
+	require.Equal(t, "false", value)
+}
+
+// Integration Tests
 
 func TestScan_EmptyDirectory(t *testing.T) {
 	t.Log("Testing Scan with empty directory")
@@ -15,13 +142,8 @@ func TestScan_EmptyDirectory(t *testing.T) {
 	tempDir := t.TempDir()
 
 	repos, err := cleangit.Scan(context.Background(), tempDir, 5)
-	if err != nil {
-		t.Fatalf("Scan failed: %v", err)
-	}
-
-	if len(repos) != 0 {
-		t.Errorf("Expected 0 repositories, got %d", len(repos))
-	}
+	require.NoError(t, err)
+	require.Len(t, repos, 0)
 }
 
 func TestScan_WithCustomHooksPath(t *testing.T) {
@@ -29,48 +151,18 @@ func TestScan_WithCustomHooksPath(t *testing.T) {
 
 	tempDir := t.TempDir()
 
-	// Create a fake Git repository with custom hooksPath
-	gitDir := filepath.Join(tempDir, ".git")
-	err := os.Mkdir(gitDir, 0o755)
-	if err != nil {
-		t.Fatalf("Failed to create .git directory: %v", err)
-	}
-
-	// Create .git/config with hooksPath
-	configPath := filepath.Join(gitDir, "config")
-	configContent := `[core]
-	repositoryformatversion = 0
-	filemode = true
-	hooksPath = .husky
-[remote "origin"]
-	url = git@github.com:example/repo.git
-`
-	err = os.WriteFile(configPath, []byte(configContent), 0o644)
-	if err != nil {
-		t.Fatalf("Failed to write config: %v", err)
-	}
+	// Create a real Git repository with custom hooksPath
+	setupGitRepo(t, tempDir)
+	setGitConfig(t, tempDir, "core.hooksPath", ".husky")
 
 	repos, err := cleangit.Scan(context.Background(), tempDir, 5)
-	if err != nil {
-		t.Fatalf("Scan failed: %v", err)
-	}
-
-	if len(repos) != 1 {
-		t.Fatalf("Expected 1 repository, got %d", len(repos))
-	}
+	require.NoError(t, err)
+	require.Len(t, repos, 1)
 
 	repo := repos[0]
-	if !repo.HasCustomHooks {
-		t.Error("Expected HasCustomHooks to be true")
-	}
-
-	if repo.CustomHooksPath != ".husky" {
-		t.Errorf("Expected CustomHooksPath to be '.husky', got '%s'", repo.CustomHooksPath)
-	}
-
-	if repo.Path != tempDir {
-		t.Errorf("Expected Path to be %s, got %s", tempDir, repo.Path)
-	}
+	require.True(t, repo.HasCustomHooks)
+	require.Equal(t, ".husky", repo.CustomHooksPath)
+	require.Equal(t, tempDir, repo.Path)
 }
 
 func TestScan_WithoutCustomHooksPath(t *testing.T) {
@@ -78,35 +170,12 @@ func TestScan_WithoutCustomHooksPath(t *testing.T) {
 
 	tempDir := t.TempDir()
 
-	// Create a fake Git repository without custom hooksPath
-	gitDir := filepath.Join(tempDir, ".git")
-	err := os.Mkdir(gitDir, 0o755)
-	if err != nil {
-		t.Fatalf("Failed to create .git directory: %v", err)
-	}
-
-	// Create .git/config without hooksPath
-	configPath := filepath.Join(gitDir, "config")
-	configContent := `[core]
-	repositoryformatversion = 0
-	filemode = true
-[remote "origin"]
-	url = git@github.com:example/repo.git
-`
-	err = os.WriteFile(configPath, []byte(configContent), 0o644)
-	if err != nil {
-		t.Fatalf("Failed to write config: %v", err)
-	}
+	// Create a real Git repository without custom hooksPath
+	setupGitRepo(t, tempDir)
 
 	repos, err := cleangit.Scan(context.Background(), tempDir, 5)
-	if err != nil {
-		t.Fatalf("Scan failed: %v", err)
-	}
-
-	// Should not return repos without custom hooksPath
-	if len(repos) != 0 {
-		t.Errorf("Expected 0 repositories, got %d", len(repos))
-	}
+	require.NoError(t, err)
+	require.Len(t, repos, 0)
 }
 
 func TestScan_NestedRepositories(t *testing.T) {
@@ -119,29 +188,13 @@ func TestScan_NestedRepositories(t *testing.T) {
 	repo2 := filepath.Join(tempDir, "subdir", "repo2")
 
 	for _, repoPath := range []string{repo1, repo2} {
-		err := os.MkdirAll(filepath.Join(repoPath, ".git"), 0o755)
-		if err != nil {
-			t.Fatalf("Failed to create .git directory: %v", err)
-		}
-
-		configPath := filepath.Join(repoPath, ".git", "config")
-		configContent := `[core]
-	hooksPath = .husky
-`
-		err = os.WriteFile(configPath, []byte(configContent), 0o644)
-		if err != nil {
-			t.Fatalf("Failed to write config: %v", err)
-		}
+		setupGitRepo(t, repoPath)
+		setGitConfig(t, repoPath, "core.hooksPath", ".husky")
 	}
 
 	repos, err := cleangit.Scan(context.Background(), tempDir, 10)
-	if err != nil {
-		t.Fatalf("Scan failed: %v", err)
-	}
-
-	if len(repos) != 2 {
-		t.Errorf("Expected 2 repositories, got %d", len(repos))
-	}
+	require.NoError(t, err)
+	require.Len(t, repos, 2)
 }
 
 func TestScan_MaxDepth(t *testing.T) {
@@ -151,39 +204,18 @@ func TestScan_MaxDepth(t *testing.T) {
 
 	// Create a deeply nested repo
 	deepRepo := filepath.Join(tempDir, "l1", "l2", "l3", "l4", "l5", "l6")
-	err := os.MkdirAll(filepath.Join(deepRepo, ".git"), 0o755)
-	if err != nil {
-		t.Fatalf("Failed to create deep .git directory: %v", err)
-	}
-
-	configPath := filepath.Join(deepRepo, ".git", "config")
-	configContent := `[core]
-	hooksPath = .husky
-`
-	err = os.WriteFile(configPath, []byte(configContent), 0o644)
-	if err != nil {
-		t.Fatalf("Failed to write config: %v", err)
-	}
+	setupGitRepo(t, deepRepo)
+	setGitConfig(t, deepRepo, "core.hooksPath", ".husky")
 
 	// Should not find with low depth
 	repos, err := cleangit.Scan(context.Background(), tempDir, 3)
-	if err != nil {
-		t.Fatalf("Scan failed: %v", err)
-	}
-
-	if len(repos) != 0 {
-		t.Errorf("Expected 0 repositories with depth 3, got %d", len(repos))
-	}
+	require.NoError(t, err)
+	require.Len(t, repos, 0)
 
 	// Should find with sufficient depth
 	repos, err = cleangit.Scan(context.Background(), tempDir, 10)
-	if err != nil {
-		t.Fatalf("Scan failed: %v", err)
-	}
-
-	if len(repos) != 1 {
-		t.Errorf("Expected 1 repository with depth 10, got %d", len(repos))
-	}
+	require.NoError(t, err)
+	require.Len(t, repos, 1)
 }
 
 func TestClean_ActualRemoval(t *testing.T) {
@@ -191,68 +223,27 @@ func TestClean_ActualRemoval(t *testing.T) {
 
 	tempDir := t.TempDir()
 
-	// Create a fake Git repository
-	gitDir := filepath.Join(tempDir, ".git")
-	err := os.Mkdir(gitDir, 0o755)
-	if err != nil {
-		t.Fatalf("Failed to create .git directory: %v", err)
-	}
-
-	configPath := filepath.Join(gitDir, "config")
-	originalContent := `[core]
-	repositoryformatversion = 0
-	hooksPath = .husky
-[remote "origin"]
-	url = git@github.com:example/repo.git
-`
-	err = os.WriteFile(configPath, []byte(originalContent), 0o644)
-	if err != nil {
-		t.Fatalf("Failed to write config: %v", err)
-	}
+	// Create a real Git repository
+	setupGitRepo(t, tempDir)
+	setGitConfig(t, tempDir, "core.hooksPath", ".husky")
 
 	repos, err := cleangit.Scan(context.Background(), tempDir, 5)
-	if err != nil {
-		t.Fatalf("Scan failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Clean for real
 	summary := cleangit.Clean(context.Background(), repos)
 
-	if summary.ConfigsRemoved != 1 {
-		t.Errorf("Expected 1 config removed, got %d", summary.ConfigsRemoved)
-	}
+	require.Equal(t, 1, summary.ConfigsRemoved)
+	require.Len(t, summary.Results, 1)
 
 	result := summary.Results[0]
-	if !result.Removed {
-		t.Error("Expected Removed to be true")
-	}
+	require.True(t, result.Removed)
+	require.NoError(t, result.Error)
+	require.Equal(t, ".husky", result.PreviousPath)
 
-	if result.Error != nil {
-		t.Errorf("Expected no error, got %v", result.Error)
-	}
-
-	if result.PreviousPath != ".husky" {
-		t.Errorf("Expected PreviousPath to be '.husky', got '%s'", result.PreviousPath)
-	}
-
-	// Verify hooksPath was removed
-	content, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("Failed to read config: %v", err)
-	}
-
-	contentStr := string(content)
-	if contains(contentStr, "hooksPath") {
-		t.Error("hooksPath was not removed from config")
-	}
-
-	// Verify other content is preserved
-	if !contains(contentStr, "[core]") {
-		t.Error("[core] section was removed")
-	}
-	if !contains(contentStr, "[remote") {
-		t.Error("[remote] section was removed")
-	}
+	// Verify hooksPath was removed using git config
+	value, exists := getGitConfig(t, tempDir, "core.hooksPath")
+	require.False(t, exists, "hooksPath should have been removed, but still has value: %s", value)
 }
 
 func TestClean_MultipleRepositories(t *testing.T) {
@@ -263,40 +254,18 @@ func TestClean_MultipleRepositories(t *testing.T) {
 	// Create multiple repos
 	for i := 1; i <= 3; i++ {
 		repoPath := filepath.Join(tempDir, filepath.FromSlash("repo"), string(rune('0'+i)))
-		gitDir := filepath.Join(repoPath, ".git")
-		err := os.MkdirAll(gitDir, 0o755)
-		if err != nil {
-			t.Fatalf("Failed to create .git directory: %v", err)
-		}
-
-		configPath := filepath.Join(gitDir, "config")
-		configContent := `[core]
-	hooksPath = .husky
-`
-		err = os.WriteFile(configPath, []byte(configContent), 0o644)
-		if err != nil {
-			t.Fatalf("Failed to write config: %v", err)
-		}
+		setupGitRepo(t, repoPath)
+		setGitConfig(t, repoPath, "core.hooksPath", ".husky")
 	}
 
 	repos, err := cleangit.Scan(context.Background(), tempDir, 10)
-	if err != nil {
-		t.Fatalf("Scan failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	summary := cleangit.Clean(context.Background(), repos)
 
-	if summary.RepositoriesWithConfig != 3 {
-		t.Errorf("Expected 3 repositories, got %d", summary.RepositoriesWithConfig)
-	}
-
-	if summary.ConfigsRemoved != 3 {
-		t.Errorf("Expected 3 configs removed, got %d", summary.ConfigsRemoved)
-	}
-
-	if len(summary.Results) != 3 {
-		t.Errorf("Expected 3 results, got %d", len(summary.Results))
-	}
+	require.Equal(t, 3, summary.RepositoriesWithConfig)
+	require.Equal(t, 3, summary.ConfigsRemoved)
+	require.Len(t, summary.Results, 3)
 }
 
 func TestScan_ContextCancellation(t *testing.T) {
@@ -308,9 +277,7 @@ func TestScan_ContextCancellation(t *testing.T) {
 	cancel() // Cancel immediately
 
 	_, err := cleangit.Scan(ctx, tempDir, 5)
-	if err == nil {
-		t.Error("Expected an error, got nil")
-	}
+	require.Error(t, err)
 }
 
 func TestScan_ExcludedDirectories(t *testing.T) {
@@ -322,53 +289,21 @@ func TestScan_ExcludedDirectories(t *testing.T) {
 	excludedDirs := []string{"node_modules", "venv", ".venv", "vendor"}
 	for _, dir := range excludedDirs {
 		repoPath := filepath.Join(tempDir, dir, "fake-repo")
-		err := os.MkdirAll(filepath.Join(repoPath, ".git"), 0o755)
-		if err != nil {
-			t.Fatalf("Failed to create .git directory in %s: %v", dir, err)
-		}
-
-		configPath := filepath.Join(repoPath, ".git", "config")
-		configContent := `[core]
-	hooksPath = .husky
-`
-		err = os.WriteFile(configPath, []byte(configContent), 0o644)
-		if err != nil {
-			t.Fatalf("Failed to write config: %v", err)
-		}
+		setupGitRepo(t, repoPath)
+		setGitConfig(t, repoPath, "core.hooksPath", ".husky")
 	}
 
 	// Create a valid repo
 	validRepo := filepath.Join(tempDir, "valid-repo")
-	err := os.MkdirAll(filepath.Join(validRepo, ".git"), 0o755)
-	if err != nil {
-		t.Fatalf("Failed to create valid repo: %v", err)
-	}
-
-	configPath := filepath.Join(validRepo, ".git", "config")
-	configContent := `[core]
-	hooksPath = .husky
-`
-	err = os.WriteFile(configPath, []byte(configContent), 0o644)
-	if err != nil {
-		t.Fatalf("Failed to write config: %v", err)
-	}
+	setupGitRepo(t, validRepo)
+	setGitConfig(t, validRepo, "core.hooksPath", ".husky")
 
 	repos, err := cleangit.Scan(context.Background(), tempDir, 10)
-	if err != nil {
-		t.Fatalf("Scan failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Should only find the valid repo, not the ones in excluded dirs
-	if len(repos) != 1 {
-		t.Errorf("Expected 1 repository, got %d", len(repos))
-		for _, repo := range repos {
-			t.Logf("Found repo: %s", repo.Path)
-		}
-	}
-
-	if len(repos) > 0 && !contains(repos[0].Path, "valid-repo") {
-		t.Errorf("Expected to find valid-repo, got %s", repos[0].Path)
-	}
+	require.Len(t, repos, 1)
+	require.Contains(t, repos[0].Path, "valid-repo")
 }
 
 func TestClean_PreservesOtherConfig(t *testing.T) {
@@ -376,77 +311,36 @@ func TestClean_PreservesOtherConfig(t *testing.T) {
 
 	tempDir := t.TempDir()
 
-	gitDir := filepath.Join(tempDir, ".git")
-	err := os.Mkdir(gitDir, 0o755)
-	if err != nil {
-		t.Fatalf("Failed to create .git directory: %v", err)
-	}
-
-	configPath := filepath.Join(gitDir, "config")
-	originalContent := `[core]
-	repositoryformatversion = 0
-	filemode = true
-	bare = false
-	logallrefupdates = true
-	ignorecase = true
-	precomposeunicode = true
-	hooksPath = .husky
-[remote "origin"]
-	url = git@github.com:example/repo.git
-	fetch = +refs/heads/*:refs/remotes/origin/*
-[branch "main"]
-	remote = origin
-	merge = refs/heads/main
-[user]
-	name = Test User
-	email = test@example.com
-`
-	err = os.WriteFile(configPath, []byte(originalContent), 0o644)
-	if err != nil {
-		t.Fatalf("Failed to write config: %v", err)
-	}
+	// Create real git repo and set multiple config values
+	setupGitRepo(t, tempDir)
+	setGitConfig(t, tempDir, "core.hooksPath", ".husky")
+	setGitConfig(t, tempDir, "user.name", "Test User")
+	setGitConfig(t, tempDir, "user.email", "test@example.com")
+	setGitConfig(t, tempDir, "remote.origin.url", "git@github.com:example/repo.git")
 
 	repos, err := cleangit.Scan(context.Background(), tempDir, 5)
-	if err != nil {
-		t.Fatalf("Scan failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Clean for real
 	summary := cleangit.Clean(context.Background(), repos)
+	require.Equal(t, 1, summary.ConfigsRemoved)
 
-	if summary.ConfigsRemoved != 1 {
-		t.Errorf("Expected 1 config removed, got %d", summary.ConfigsRemoved)
-	}
+	// Verify hooksPath was removed
+	value, exists := getGitConfig(t, tempDir, "core.hooksPath")
+	require.False(t, exists, "hooksPath should have been removed, but still has value: %s", value)
 
-	// Verify hooksPath was removed but everything else preserved
-	content, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("Failed to read config: %v", err)
-	}
+	// Verify other settings are preserved
+	value, exists = getGitConfig(t, tempDir, "user.name")
+	require.True(t, exists)
+	require.Equal(t, "Test User", value)
 
-	contentStr := string(content)
+	value, exists = getGitConfig(t, tempDir, "user.email")
+	require.True(t, exists)
+	require.Equal(t, "test@example.com", value)
 
-	// Should NOT contain hooksPath
-	if contains(contentStr, "hooksPath") {
-		t.Error("hooksPath was not removed from config")
-	}
-
-	// Should preserve all other sections
-	mustContain := []string{
-		"[core]",
-		"repositoryformatversion",
-		"[remote \"origin\"]",
-		"[branch \"main\"]",
-		"[user]",
-		"name = Test User",
-		"email = test@example.com",
-	}
-
-	for _, str := range mustContain {
-		if !contains(contentStr, str) {
-			t.Errorf("Config should contain '%s' but doesn't", str)
-		}
-	}
+	value, exists = getGitConfig(t, tempDir, "remote.origin.url")
+	require.True(t, exists)
+	require.Equal(t, "git@github.com:example/repo.git", value)
 }
 
 func TestClean_EmptyResults(t *testing.T) {
@@ -454,17 +348,9 @@ func TestClean_EmptyResults(t *testing.T) {
 
 	summary := cleangit.Clean(context.Background(), []cleangit.Repository{})
 
-	if summary.RepositoriesWithConfig != 0 {
-		t.Errorf("Expected 0 repositories, got %d", summary.RepositoriesWithConfig)
-	}
-
-	if summary.ConfigsRemoved != 0 {
-		t.Errorf("Expected 0 configs removed, got %d", summary.ConfigsRemoved)
-	}
-
-	if len(summary.Results) != 0 {
-		t.Errorf("Expected 0 results, got %d", len(summary.Results))
-	}
+	require.Equal(t, 0, summary.RepositoriesWithConfig)
+	require.Equal(t, 0, summary.ConfigsRemoved)
+	require.Len(t, summary.Results, 0)
 }
 
 func TestScan_NonGitDirectory(t *testing.T) {
@@ -475,31 +361,62 @@ func TestScan_NonGitDirectory(t *testing.T) {
 	// Create some random directories without .git
 	for _, dir := range []string{"src", "docs", "build"} {
 		err := os.MkdirAll(filepath.Join(tempDir, dir), 0o755)
-		if err != nil {
-			t.Fatalf("Failed to create directory: %v", err)
-		}
+		require.NoError(t, err)
 	}
 
 	repos, err := cleangit.Scan(context.Background(), tempDir, 5)
-	if err != nil {
-		t.Fatalf("Scan failed: %v", err)
-	}
-
-	if len(repos) != 0 {
-		t.Errorf("Expected 0 repositories, got %d", len(repos))
-	}
+	require.NoError(t, err)
+	require.Len(t, repos, 0)
 }
 
 // Helper functions
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && (s[:len(substr)] == substr || s[len(s)-len(substr):] == substr || containsMiddle(s, substr)))
+
+// setupGitRepo creates a real git repository using git init
+func setupGitRepo(t *testing.T, dir string) {
+	t.Helper()
+
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("Failed to create directory: %v", err)
+	}
+
+	cmd := exec.Command("git", "init")
+	cmd.Dir = dir
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("Failed to init git repo: %v\nOutput: %s", err, output)
+	}
 }
 
-func containsMiddle(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
+// setGitConfig sets a git config value using git config command
+func setGitConfig(t *testing.T, repoPath, key, value string) {
+	t.Helper()
+
+	cmd := exec.Command("git", "config", "--local", key, value)
+	cmd.Dir = repoPath
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("Failed to set git config %s=%s: %v\nOutput: %s", key, value, err, output)
 	}
-	return false
+}
+
+// getGitConfig gets a git config value using git config command
+func getGitConfig(t *testing.T, repoPath, key string) (string, bool) {
+	t.Helper()
+
+	cmd := exec.Command("git", "config", "--local", key)
+	cmd.Dir = repoPath
+	output, err := cmd.Output()
+	if err != nil {
+		// Exit code 1 means key doesn't exist
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return "", false
+		}
+		t.Fatalf("Failed to get git config %s: %v", key, err)
+	}
+
+	value := string(output)
+	// Trim trailing newline
+	if len(value) > 0 && value[len(value)-1] == '\n' {
+		value = value[:len(value)-1]
+	}
+
+	return value, value != ""
 }

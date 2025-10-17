@@ -18,7 +18,7 @@ func main() {
 			commands.Hooks,
 			commands.Add,
 			commands.Remove,
-			commands.CleanLocalHooks,
+			commands.ScanLocal,
 		},
 	}
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -15,14 +16,6 @@ var (
 	ErrHooksNotFound    = errors.New("hooks directory not found")
 	ErrRemovalFailed    = errors.New("removing hooks")
 	ErrUserCancelled    = errors.New("operation cancelled by user")
-)
-
-// Exit codes
-const (
-	ExitSuccess        = 0
-	ExitPartialSuccess = 1
-	ExitFailure        = 2
-	ExitUserCancelled  = 3
 )
 
 // Repository represents a Git repository
@@ -88,15 +81,11 @@ func Clean(ctx context.Context, repos []Repository) Summary {
 		default:
 		}
 
-		if res.Removed {
-			if err := removeHooksPath(&repos[i]); err != nil {
-				res.Error = err
-			} else {
-				res.Removed = true
-				sum.ConfigsRemoved++
-			}
+		if err := removeHooksPath(&repos[i]); err != nil {
+			res.Error = err
 		} else {
-			res.Removed = true // Would be removed
+			res.Removed = true
+			sum.ConfigsRemoved++
 		}
 
 		sum.Results = append(sum.Results, res)
@@ -206,81 +195,45 @@ func createRepository(repoPath, gitDir string) Repository {
 	return repo
 }
 
-// getHooksPath extracts hooksPath from .git/config
+// getHooksPath extracts hooksPath from .git/config using git config command
 func getHooksPath(configPath string) (string, bool) {
-	data, err := os.ReadFile(configPath)
+	// Get the repository path (parent of .git directory)
+	repoPath := filepath.Dir(filepath.Dir(configPath))
+
+	// Use git config to read the value
+	cmd := exec.Command("git", "config", "--local", "core.hooksPath")
+	cmd.Dir = repoPath
+
+	output, err := cmd.Output()
 	if err != nil {
+		// git config returns exit code 1 if key doesn't exist
 		return "", false
 	}
 
-	lines := strings.Split(string(data), "\n")
-	inCore := false
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-
-		if trimmed == "[core]" {
-			inCore = true
-			continue
-		}
-
-		if strings.HasPrefix(trimmed, "[") {
-			inCore = false
-			continue
-		}
-
-		if inCore && strings.Contains(trimmed, "hooksPath") {
-			parts := strings.SplitN(trimmed, "=", 2)
-			if len(parts) == 2 {
-				return strings.TrimSpace(parts[1]), true
-			}
-		}
+	value := strings.TrimSpace(string(output))
+	if value == "" {
+		return "", false
 	}
 
-	return "", false
+	return value, true
 }
 
-// removeHooksPath removes the hooksPath line from .git/config
+// removeHooksPath removes the hooksPath setting using git config command
 func removeHooksPath(repo *Repository) error {
-	data, err := os.ReadFile(repo.ConfigPath)
-	if err != nil {
-		return fmt.Errorf("reading config: %w", err)
-	}
+	// Use git config to unset the value
+	cmd := exec.Command("git", "config", "--local", "--unset", "core.hooksPath")
+	cmd.Dir = repo.Path
 
-	// Remove hooksPath line
-	lines := strings.Split(string(data), "\n")
-	var newLines []string
-	inCore := false
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-
-		if trimmed == "[core]" {
-			inCore = true
-			newLines = append(newLines, line)
-			continue
+	// Run the command
+	if err := cmd.Run(); err != nil {
+		// Check if it's an exit error
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			// Exit code 5 means the key didn't exist, which is fine
+			if exitErr.ExitCode() == 5 {
+				return nil
+			}
 		}
-
-		if strings.HasPrefix(trimmed, "[") {
-			inCore = false
-			newLines = append(newLines, line)
-			continue
-		}
-
-		// Skip hooksPath line
-		if inCore && strings.Contains(trimmed, "hooksPath") {
-			continue
-		}
-
-		newLines = append(newLines, line)
-	}
-
-	newContent := strings.Join(newLines, "\n")
-
-	// Write back
-	err = os.WriteFile(repo.ConfigPath, []byte(newContent), 0o644)
-	if err != nil {
-		return fmt.Errorf("writing config: %w", err)
+		return fmt.Errorf("unsetting core.hooksPath: %w", err)
 	}
 
 	return nil
