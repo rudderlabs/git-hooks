@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/rudderlabs/git-hooks/compare/v1.1.0...v1.1.1) (2025-10-21)
+
+
+### Bug Fixes
+
+* broken release ([#24](https://github.com/rudderlabs/git-hooks/issues/24)) ([ed3d1e3](https://github.com/rudderlabs/git-hooks/commit/ed3d1e310f95bc2de4b42353bf9baaa5b7e78e9c))
+
 ## [1.1.0](https://github.com/rudderlabs/git-hooks/compare/v1.0.2...v1.1.0) (2025-10-21)
 
 
