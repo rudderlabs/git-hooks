@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.0](https://github.com/rudderlabs/git-hooks/compare/v1.0.2...v1.1.0) (2025-10-21)
+
+
+### Features
+
+* add local repo cleanup hooks ([#21](https://github.com/rudderlabs/git-hooks/issues/21)) ([637d5b0](https://github.com/rudderlabs/git-hooks/commit/637d5b0ff2abac67a4de986dc4f49f5cc8ae43ad))
+* tag commit message with gitleaks version using commit-msg hook ([#17](https://github.com/rudderlabs/git-hooks/issues/17)) ([5ea3ead](https://github.com/rudderlabs/git-hooks/commit/5ea3eaddaf28a1aee2182cd185dab86b0858c09b))
+
 ## [1.0.2](https://github.com/rudderlabs/git-hooks/compare/v1.0.1...v1.0.2) (2025-09-23)
 
 
