@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.2](https://github.com/rudderlabs/git-hooks/compare/v1.1.1...v1.1.2) (2025-10-22)
+
+
+### Bug Fixes
+
+* wrong path in module ([#27](https://github.com/rudderlabs/git-hooks/issues/27)) ([c16b938](https://github.com/rudderlabs/git-hooks/commit/c16b9388f5ccf9a6d2bfa893ee6c8d85870cc717))
+
 ## [1.1.1](https://github.com/rudderlabs/git-hooks/compare/v1.1.0...v1.1.1) (2025-10-21)
 
 
