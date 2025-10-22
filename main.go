@@ -4,7 +4,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/lvrach/git-hooks/commands"
+	"github.com/rudderlabs/git-hooks/commands"
 	"github.com/urfave/cli/v2"
 )
 
