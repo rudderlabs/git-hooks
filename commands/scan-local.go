@@ -8,7 +8,7 @@ import (
 	"os/signal"
 	"strings"
 
-	cleangit "github.com/lvrach/git-hooks/internal/clean-local-git"
+	cleangit "github.com/rudderlabs/git-hooks/internal/clean-local-git"
 	"github.com/urfave/cli/v2"
 )
 
