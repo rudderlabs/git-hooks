@@ -12,7 +12,7 @@
         {"type": "chore", "section": "Miscellaneous", "hidden": false},
         {"type": "refactor", "section": "Miscellaneous", "hidden": false},
         {"type": "test", "section": "Miscellaneous", "hidden": false},
-        {"type": "docs", "section": "Documentation", "hidden": false}
+        {"type": "doc", "section": "Documentation", "hidden": false}
       ]
     }
   }
