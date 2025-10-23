@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.1.3](https://github.com/rudderlabs/git-hooks/compare/v1.1.2...v1.1.3) (2025-10-23)
+
+
+### Bug Fixes
+
+* test it ([1685a0e](https://github.com/rudderlabs/git-hooks/commit/1685a0ed12e0791726133c1f3c147df6115ccdb0))
+* test release-please with github app token and chore commits ([aba015f](https://github.com/rudderlabs/git-hooks/commit/aba015f79efcadb92c663512a9a9a1e16df20def))
+* update release-please workflow to use correct branch extraction ([c1fea2e](https://github.com/rudderlabs/git-hooks/commit/c1fea2e4f45d5045513b53df0fc210ba1706cd78))
+
 ## [1.1.2](https://github.com/rudderlabs/git-hooks/compare/v1.1.1...v1.1.2) (2025-10-22)
 
 
