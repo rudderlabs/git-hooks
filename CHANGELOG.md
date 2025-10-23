@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.1.3](https://github.com/rudderlabs/git-hooks/compare/v1.1.2...v1.1.3) (2025-10-23)
+
+
+### Bug Fixes
+
+* disable component in release tags to match existing tag format ([397b549](https://github.com/rudderlabs/git-hooks/commit/397b549d9714bd2c07079a0b1ee8835ab93544a1))
+* test it ([1685a0e](https://github.com/rudderlabs/git-hooks/commit/1685a0ed12e0791726133c1f3c147df6115ccdb0))
+* test release-please with github app token and chore commits ([aba015f](https://github.com/rudderlabs/git-hooks/commit/aba015f79efcadb92c663512a9a9a1e16df20def))
+* update release-please workflow to use correct branch extraction ([c1fea2e](https://github.com/rudderlabs/git-hooks/commit/c1fea2e4f45d5045513b53df0fc210ba1706cd78))
+
+
+### Miscellaneous
+
+* add app id ([5f0ca94](https://github.com/rudderlabs/git-hooks/commit/5f0ca94127c8027628ec1783fb3495dc605cfcdf))
+* add manifest file and update workflow to use config/manifest mode ([cd6ce52](https://github.com/rudderlabs/git-hooks/commit/cd6ce526e09dc4c48ba91ef1b7aa9fccfaecfdb3))
+* add release-please configuration file ([2a8d236](https://github.com/rudderlabs/git-hooks/commit/2a8d236ef25fb4f3f73adc5ddcc652b83733df25))
+* forcing release 0.1.0 ([d5cf1cb](https://github.com/rudderlabs/git-hooks/commit/d5cf1cb5c2691f085a15e821d965622c6c7f5ada))
+* remove workflow_dispatch from release-please workflow ([f28144e](https://github.com/rudderlabs/git-hooks/commit/f28144ea51ed176b8203c182b0894e770ff3d155))
+* rename GitHub App credentials variables ([b490b4a](https://github.com/rudderlabs/git-hooks/commit/b490b4a83e8938140a823266e1f47e6f18ab78ec))
+* update release-please action to googleapis version ([bc0fdd4](https://github.com/rudderlabs/git-hooks/commit/bc0fdd453c94436b51c4000f6061db7bd5f7285f))
+* use github app token for release please ([a047fce](https://github.com/rudderlabs/git-hooks/commit/a047fce0fbe4d1bbc7333768ff5fcb206c8c41e0))
+
 ## [1.1.2](https://github.com/rudderlabs/git-hooks/compare/v1.1.1...v1.1.2) (2025-10-22)
 
 
