@@ -2,7 +2,6 @@ on:
   push:
     branches:
       - "main"
-      - "chore.github-app" # for testing the github app token
 name: release-please
 permissions:
   contents: read
