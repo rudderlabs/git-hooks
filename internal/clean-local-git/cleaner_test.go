@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	cleangit "github.com/lvrach/git-hooks/internal/clean-local-git"
+	cleangit "github.com/rudderlabs/git-hooks/internal/clean-local-git"
 	"github.com/stretchr/testify/require"
 )
 
