@@ -3,12 +3,6 @@ on:
     branches:
       - "main"
       - "chore.github-app" # for testing the github app token
-  workflow_dispatch:  # Add this
-    inputs:
-      branch:
-        description: 'Branch to run on'
-        required: false
-        default: 'main'
 name: release-please
 permissions:
   contents: read
