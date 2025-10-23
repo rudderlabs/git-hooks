@@ -3,6 +3,7 @@
     ".": {
       "release-type": "go",
       "package-name": "git-hooks",
+      "include-component-in-tag": false,
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
       "changelog-sections": [
