@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.3](https://github.com/rudderlabs/git-hooks/compare/v1.1.2...v1.1.3) (2025-10-24)
+
+
+### Miscellaneous
+
+* migrate release-please to GitHub App authentication ([#29](https://github.com/rudderlabs/git-hooks/issues/29)) ([4ab6820](https://github.com/rudderlabs/git-hooks/commit/4ab682004aa18b92ed3e1f8064a2226e8302b01d))
+
 ## [1.1.2](https://github.com/rudderlabs/git-hooks/compare/v1.1.1...v1.1.2) (2025-10-22)
 
 
