@@ -26,7 +26,7 @@ if [ -n "$COMMIT_MSG_FILE" ]; then
 
         # Detect if commit message already has a footer section
         # Footer is identified by lines matching "Key: value" or "Key #value" format
-        # Footer section has no blank lines within it
+        # Footer values can span multiple lines (RFC 822 folding) with continuation lines starting with whitespace
         HAS_FOOTER=false
         
         # Read the file, skip comments (lines starting with #), find last non-empty line
@@ -35,10 +35,14 @@ if [ -n "$COMMIT_MSG_FILE" ]; then
         # Count total non-empty, non-comment lines
         LINE_COUNT=$(grep -v '^#' "$COMMIT_MSG_FILE" | grep -v '^$' | wc -l | tr -d ' ')
         
-        # Check if last line matches footer format (Key: value or Key #value)
-        # Allow spaces in key names (e.g., "BREAKING CHANGE")
+        # Check if last line matches footer format OR is a continuation line (starts with whitespace)
+        # Footer patterns:
+        #   - "Key: value" where Key is letters/digits/hyphens (no spaces)
+        #   - "BREAKING CHANGE: value" (special case with space)
+        #   - "Key #number" for issue references
+        # Continuation lines: start with space or tab (multi-line footer values)
         # BUT: If there's only 1 line, it's the header, not a footer
-        if [ "$LINE_COUNT" -gt 1 ] && echo "$LAST_NON_EMPTY" | grep -qE '^[A-Za-z][-A-Za-z ]*: .+|^[A-Za-z][-A-Za-z]* #[0-9]+'; then
+        if [ "$LINE_COUNT" -gt 1 ] && { echo "$LAST_NON_EMPTY" | grep -qE '^([A-Za-z][-A-Za-z0-9]*|BREAKING CHANGE): .+|^[A-Za-z][-A-Za-z0-9]* #[0-9]+|^[ \t]+'; }; then
             HAS_FOOTER=true
         fi
         

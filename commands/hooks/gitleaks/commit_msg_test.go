@@ -167,6 +167,65 @@ Co-authored-by: Jane Doe <jane@example.com>
 Scanned-by: gitleaks v8.18.0`,
 			description: "Should handle complex multi-section commits",
 		},
+		{
+			name: "multi-line footer value for key",
+			inputMessage: `feat(api): add new endpoint
+
+This adds a new REST API endpoint for users.
+
+Details:
+- Supports GET and POST
+- Returns JSON
+- Rate limited
+
+Implements: #100
+Co-authored-by: Jane Doe <jane@example.com>
+BREAKING CHANGE: this is a breaking change
+  with multiple lines
+  of description`,
+			expectedOutput: `feat(api): add new endpoint
+
+This adds a new REST API endpoint for users.
+
+Details:
+- Supports GET and POST
+- Returns JSON
+- Rate limited
+
+Implements: #100
+Co-authored-by: Jane Doe <jane@example.com>
+BREAKING CHANGE: this is a breaking change
+  with multiple lines
+  of description
+Scanned-by: gitleaks v8.18.0`,
+			description: "Should handle multi-line footer value for key",
+		},
+		{
+			name: "body text with colon not treated as footer",
+			inputMessage: `feat: add feature
+
+This is a sentence: with a colon in the middle.
+Another line: with another colon here.`,
+			expectedOutput: `feat: add feature
+
+This is a sentence: with a colon in the middle.
+Another line: with another colon here.
+
+Scanned-by: gitleaks v8.18.0`,
+			description: "Should not treat body text with spaces before colon as footer",
+		},
+		{
+			name: "body ending with invalid footer key",
+			inputMessage: `fix: resolve issue
+
+The problem was: memory leak in component`,
+			expectedOutput: `fix: resolve issue
+
+The problem was: memory leak in component
+
+Scanned-by: gitleaks v8.18.0`,
+			description: "Should reject footer keys with spaces (except BREAKING CHANGE)",
+		},
 	}
 
 	for _, tt := range tests {
@@ -192,7 +251,7 @@ Scanned-by: gitleaks v8.18.0`,
 			require.Equal(t, tt.expectedOutput, actual, "Commit message format incorrect")
 
 			// Clean up
-			os.Remove(msgFile)
+			require.NoError(t, os.Remove(msgFile))
 		})
 	}
 }
