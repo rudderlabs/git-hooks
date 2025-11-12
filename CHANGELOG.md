@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.4](https://github.com/rudderlabs/git-hooks/compare/v1.1.3...v1.1.4) (2025-11-12)
+
+
+### Miscellaneous
+
+* enforce fine-grain permissions for release-please token ([#34](https://github.com/rudderlabs/git-hooks/issues/34)) ([4b42999](https://github.com/rudderlabs/git-hooks/commit/4b4299913871bd9c6ad1caef62031f4d300551f6))
+* making the scan message follow conventional commits ([#36](https://github.com/rudderlabs/git-hooks/issues/36)) ([ff403bd](https://github.com/rudderlabs/git-hooks/commit/ff403bd1c7032c5f26612d0a9b70eebea45f3ac1))
+
 ## [1.1.3](https://github.com/rudderlabs/git-hooks/compare/v1.1.2...v1.1.3) (2025-10-24)
 
 
