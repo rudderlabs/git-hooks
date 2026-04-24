@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.5](https://github.com/rudderlabs/git-hooks/compare/v1.1.4...v1.1.5) (2026-04-24)
+
+
+### Miscellaneous
+
+* **vuln:** pin and bump action refs (SEC-171) ([#44](https://github.com/rudderlabs/git-hooks/issues/44)) ([623ec0d](https://github.com/rudderlabs/git-hooks/commit/623ec0d7a62cd4e560be8c3deec912019666f417))
+* **vuln:** zizmor --fix=all findings (SEC-199) ([#46](https://github.com/rudderlabs/git-hooks/issues/46)) ([ac16e1d](https://github.com/rudderlabs/git-hooks/commit/ac16e1d86e2bbe8e5e681de1f30fea5fa363a542))
+
 ## [1.1.4](https://github.com/rudderlabs/git-hooks/compare/v1.1.3...v1.1.4) (2025-11-12)
 
 
