@@ -145,8 +145,8 @@ func stopTreeWith(pid int, done <-chan error, stage proc, tree []proc) error {
 	// learn takes the stage's identity only while it is unreaped: after the
 	// reap its pid, and the children below it, may be someone else's. This
 	// also recovers from a ps that failed on an earlier call.
-	learn := func() map[int]psEntry {
-		snap := snapshot()
+	learn := func(by time.Time) map[int]psEntry {
+		snap := snapshotBy(by)
 		if snap != nil && !reaped() {
 			if stage.start == "" {
 				stage.start = snap[pid].start
@@ -155,34 +155,46 @@ func stopTreeWith(pid int, done <-chan error, stage proc, tree []proc) error {
 		}
 		return snap
 	}
+	// Every ps call below is bounded by these deadlines, so the whole stop
+	// takes at most about 8 s even when ps hangs.
+	start := time.Now()
+	deadline := start.Add(5 * time.Second)
 	// Learn the tree before the first signal: a stage that dies on SIGTERM
-	// takes the only route to its children with it. A ps that fails once
-	// gets two more tries; one that never works (BusyBox has no lstart)
-	// leaves only the stage to signal.
-	for i := 0; i < 3 && stage.start == "" && !reaped(); i++ {
-		learn()
+	// takes the only route to its children with it. A ps that fails gets
+	// retried within one second; one that never works (BusyBox has no
+	// lstart) leaves only the stage to signal.
+	for stage.start == "" && !reaped() && time.Since(start) < time.Second {
+		learn(start.Add(time.Second))
 	}
 	if !reaped() {
 		_ = syscall.Kill(pid, syscall.SIGTERM)
 	}
-	// SIGTERM goes once to each process, so a TERM trap runs once.
-	signalProcs(fresh, pid, syscall.SIGTERM, reaped)
-	fresh = nil
-	// A fixed deadline: a slow ps must not stretch the grace period.
-	deadline := time.Now().Add(5 * time.Second)
+	// SIGTERM goes once to each process, so a TERM trap runs once. A batch
+	// that ps could not verify stays queued for the next try.
+	if signalProcs(fresh, pid, syscall.SIGTERM, reaped, deadline) {
+		fresh = nil
+	}
 	for time.Now().Before(deadline) {
 		time.Sleep(100 * time.Millisecond)
-		snap := learn()
-		signalProcs(fresh, pid, syscall.SIGTERM, reaped)
-		fresh = nil
-		// Without a snapshot no descendant can be verified, so once the stage
-		// is gone there is nothing left to wait for.
-		if reaped() && len(live(tree, snap)) == 0 {
+		snap := learn(deadline)
+		if signalProcs(fresh, pid, syscall.SIGTERM, reaped, deadline) {
+			fresh = nil
+		}
+		// Once the stage is gone, stop early only on a real snapshot: one
+		// failed ps must not abandon a child that ignores SIGTERM.
+		if reaped() && ((snap != nil && len(live(tree, snap)) == 0) || len(tree) == 0) {
 			return waitErr
 		}
 	}
-	learn()
-	signalProcs(tree, pid, syscall.SIGKILL, reaped)
+	// Freeze everything first, so nothing forks between the last scan and
+	// the kill.
+	final := time.Now().Add(time.Second)
+	if !reaped() {
+		_ = syscall.Kill(pid, syscall.SIGSTOP)
+	}
+	signalProcs(tree, pid, syscall.SIGSTOP, reaped, final)
+	learn(final)
+	signalProcs(tree, pid, syscall.SIGKILL, reaped, final)
 	if !exited {
 		waitErr = <-done
 	}
@@ -205,21 +217,40 @@ type psEntry struct {
 // snapshot reads every process with its parent and start time. ps runs by
 // absolute path under a deadline, so a broken PATH cannot hang a kill.
 func snapshot() map[int]psEntry {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	var out []byte
-	var err error
-	// Some Linux images keep ps only in /usr/bin. BusyBox ps lacks lstart and
-	// fails here; the callers then fall back to pids.
-	for _, ps := range psPaths {
-		cmd := exec.CommandContext(ctx, ps, "-A", "-o", "pid=,ppid=,lstart=")
-		// A ps that forks or hangs in the kernel must not hold Output past the deadline.
-		cmd.WaitDelay = 100 * time.Millisecond
-		if out, err = cmd.Output(); err == nil {
-			break
-		}
+	return snapshotBy(time.Now().Add(2 * time.Second))
+}
+
+// snapshotBy is snapshot with a caller's deadline, so a slow ps cannot push
+// a stop past its grace period.
+func snapshotBy(deadline time.Time) map[int]psEntry {
+	if limit := time.Now().Add(2 * time.Second); deadline.After(limit) {
+		deadline = limit
 	}
-	if err != nil {
+	// A ps stuck in the kernel cannot be killed, and exec waits for it even
+	// after the context ends. Read it in a goroutine and stop waiting at the
+	// deadline; the goroutine ends with the process.
+	result := make(chan []byte, 1)
+	go func() {
+		ctx, cancel := context.WithDeadline(context.Background(), deadline)
+		defer cancel()
+		// Some Linux images keep ps only in /usr/bin. BusyBox ps lacks lstart
+		// and fails here; callers then signal only the stage.
+		for _, ps := range psPaths {
+			cmd := exec.CommandContext(ctx, ps, "-A", "-o", "pid=,ppid=,lstart=")
+			cmd.WaitDelay = 100 * time.Millisecond
+			if out, err := cmd.Output(); err == nil {
+				result <- out
+				return
+			}
+		}
+		result <- nil
+	}()
+	var out []byte
+	select {
+	case out = <-result:
+	case <-time.After(time.Until(deadline) + 200*time.Millisecond):
+	}
+	if out == nil {
 		return nil
 	}
 	procs := map[int]psEntry{}
@@ -280,9 +311,12 @@ func live(procs []proc, snap map[int]psEntry) []proc {
 // SIGKILL the stage too. The stage is our child: until cmd.Wait reaps it, its
 // pid cannot be reused, so it needs no start time and is signalled even when
 // ps fails.
-func signalProcs(procs []proc, stagePid int, sig syscall.Signal, reaped func() bool) {
+func signalProcs(procs []proc, stagePid int, sig syscall.Signal, reaped func() bool, by time.Time) (verified bool) {
+	verified = true
 	if len(procs) > 0 {
-		for _, p := range live(procs, snapshot()) {
+		snap := snapshotBy(by)
+		verified = snap != nil
+		for _, p := range live(procs, snap) {
 			if p.pid != stagePid {
 				_ = syscall.Kill(p.pid, sig)
 			}
@@ -291,6 +325,7 @@ func signalProcs(procs []proc, stagePid int, sig syscall.Signal, reaped func() b
 	if sig == syscall.SIGKILL && !reaped() {
 		_ = syscall.Kill(stagePid, sig)
 	}
+	return verified
 }
 
 // Background jobs ignore SIGINT in non-interactive shells, so failed stages need group cleanup.

@@ -91,7 +91,9 @@ func TestStopTreeNeverSignalsUnverifiedPids(t *testing.T) {
 	tree := []proc{{pid: unrelated.Process.Pid, start: "Thu Jan  1 00:00:00 1970"}}
 	start := time.Now()
 	require.Error(t, stopTreeWith(stage.Process.Pid, done, proc{pid: stage.Process.Pid}, tree), "the stage dies")
-	require.Less(t, time.Since(start), 3*time.Second, "no grace wait once the stage is gone")
+	// With a tracked process still unverified, the loop waits for ps to recover,
+	// but never past the grace deadline.
+	require.Less(t, time.Since(start), 8*time.Second)
 	require.NoError(t, unrelated.Process.Signal(syscall.Signal(0)), "an unverified pid is never signalled")
 }
 
@@ -118,4 +120,48 @@ func TestStopTreeRecoversFromOneFailedPs(t *testing.T) {
 	t.Cleanup(func() { psPaths = old })
 	require.Error(t, stopTree(cmd.Process.Pid, done))
 	require.Eventually(t, func() bool { return syscall.Kill(child, 0) == syscall.ESRCH }, 10*time.Second, 20*time.Millisecond, "the child must not outlive the stage")
+}
+
+func TestStopTreeIsBoundedWhenPsHangs(t *testing.T) {
+	// Not parallel: it changes a package variable.
+	dir := t.TempDir()
+	hang := filepath.Join(dir, "ps")
+	require.NoError(t, os.WriteFile(hang, []byte("#!/bin/sh\nexec /bin/sleep 30\n"), 0o755))
+	old := psPaths
+	psPaths = []string{hang}
+	t.Cleanup(func() { psPaths = old })
+	cmd := exec.Command("/bin/sh", "-c", "trap '' TERM; exec /bin/sleep 300")
+	require.NoError(t, cmd.Start())
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	start := time.Now()
+	require.Error(t, stopTree(cmd.Process.Pid, done))
+	require.Less(t, time.Since(start), 9*time.Second, "a hanging ps must not stretch the stop")
+}
+
+func TestStopTreeSurvivesOneFailedPsAfterReap(t *testing.T) {
+	// Not parallel: it changes a package variable.
+	dir := t.TempDir()
+	flaky := filepath.Join(dir, "ps")
+	// The third call fails; every other call works.
+	script := "#!/bin/sh\nn=$(cat \"" + dir + "/n\" 2>/dev/null || echo 0)\nn=$((n+1))\necho $n > \"" + dir + "/n\"\n[ \"$n\" = 3 ] && exit 1\nexec /bin/ps \"$@\"\n"
+	require.NoError(t, os.WriteFile(flaky, []byte(script), 0o755))
+	cmd := exec.Command("/bin/sh", "-c", `/bin/sh -c 'trap "" TERM; echo $$ > child; exec /bin/sleep 300' & while [ ! -s child ]; do :; done; wait`)
+	cmd.Dir = dir
+	require.NoError(t, cmd.Start())
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	path := filepath.Join(dir, "child")
+	require.Eventually(t, func() bool { b, _ := os.ReadFile(path); return len(strings.TrimSpace(string(b))) > 0 }, 5*time.Second, 10*time.Millisecond)
+	b, err := os.ReadFile(path)
+	require.NoError(t, err)
+	child, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = syscall.Kill(child, syscall.SIGKILL) })
+
+	old := psPaths
+	psPaths = []string{flaky}
+	t.Cleanup(func() { psPaths = old })
+	require.Error(t, stopTree(cmd.Process.Pid, done))
+	require.Eventually(t, func() bool { return syscall.Kill(child, 0) == syscall.ESRCH }, 10*time.Second, 20*time.Millisecond, "one failed ps must not save the child")
 }
