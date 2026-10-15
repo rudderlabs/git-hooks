@@ -30,7 +30,8 @@ func TestStandardHookPathIgnoresHooksPath(t *testing.T) {
 	require.NoError(t, err)
 	for _, dir := range []string{repo, wt} {
 		t.Chdir(dir)
-		path, ok := standardHookPath(context.Background(), "pre-commit")
+		path, ok, err := standardHookPath(context.Background(), "pre-commit")
+		require.NoError(t, err)
 		require.True(t, ok)
 		got, err := filepath.EvalSymlinks(filepath.Dir(path))
 		require.NoError(t, err)

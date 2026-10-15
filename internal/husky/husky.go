@@ -29,7 +29,7 @@ type Plan struct {
 	Reason string
 }
 
-var legacySource = regexp.MustCompile(`(?m)^[\t ]*\.[\t ]+"\$\(dirname[\t ]+(?:--[\t ]+)?"\$0"\)/_/husky\.sh"[\t ]*(?:\r?$|#|;)`)
+var legacySource = regexp.MustCompile(`(?m)^[\t ]*(?:\.|source)[\t ]+[^#\r\n]*_/husky\.sh["']*[\t ]*(?:\r?$|#|;)`)
 
 // Resolve inspects the repository without executing hooks or changing its environment.
 func Resolve(repoRoot, hookName string, args []string, environ []string) Plan {
@@ -42,18 +42,25 @@ func Resolve(repoRoot, hookName string, args []string, environ []string) Plan {
 	if err != nil || !info.Mode().IsRegular() {
 		return Plan{Action: None}
 	}
-	if slices.Contains(environ, "HUSKY=0") {
+	var husky string
+	for _, entry := range environ {
+		if strings.HasPrefix(entry, "HUSKY=") {
+			husky = strings.TrimPrefix(entry, "HUSKY=")
+		}
+	}
+	if husky == "0" {
 		return Plan{Action: Skip, Reason: "Husky is disabled by HUSKY=0"}
 	}
 	info, err = os.Stat(filepath.Join(repoRoot, "node_modules"))
-	if err != nil || !info.IsDir() {
+	if (err != nil || !info.IsDir()) && !regularFile(filepath.Join(repoRoot, ".pnp.cjs")) && !regularFile(filepath.Join(repoRoot, ".pnp.js")) {
 		return Plan{Action: Skip, Reason: "Husky needs node_modules; run your package manager's install command"}
 	}
 	content, err := os.ReadFile(hook)
 	if err != nil {
 		return Plan{Action: Skip, Reason: "Cannot read Husky hook: " + err.Error()}
 	}
-	if legacySource.Match(content) {
+	legacy := legacySource.Match(content)
+	if legacy {
 		if _, err := os.Stat(filepath.Join(repoRoot, ".husky", "_", "husky.sh")); err != nil {
 			return Plan{Action: Skip, Reason: "Missing .husky/_/husky.sh; run npm install or migrate to husky v9"}
 		}
@@ -74,11 +81,19 @@ func Resolve(repoRoot, hookName string, args []string, environ []string) Plan {
 		}
 	}
 	bin := filepath.Join(repoRoot, "node_modules", ".bin")
-	if path != "" {
-		bin += string(os.PathListSeparator) + path
+	if info, err := os.Stat(bin); err == nil && info.IsDir() {
+		if path != "" {
+			bin += string(os.PathListSeparator) + path
+		}
+		path = bin
 	}
-	env = append(env, "husky_skip_init=1", "PATH="+bin)
-	return Plan{Action: Run, Argv: append([]string{"sh", "-e", hook}, args...), Env: env}
+	env = append(env, "PATH="+path)
+	if legacy {
+		// The helper loads ~/.huskyrc before restarting the hook with sh -e.
+		return Plan{Action: Run, Argv: append([]string{"sh", hook}, args...), Env: env}
+	}
+	init := `i="${XDG_CONFIG_HOME:-$HOME/.config}/husky/init.sh"; [ -f "$i" ] && . "$i"; exec sh -e "$0" "$@"`
+	return Plan{Action: Run, Argv: append([]string{"sh", "-c", init, hook}, args...), Env: env}
 }
 
 func regularFile(path string) bool {

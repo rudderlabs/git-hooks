@@ -192,13 +192,32 @@ func TestCanceledBeforeStart(t *testing.T) {
 }
 
 func TestCPUCapCacheFailure(t *testing.T) {
-	cache := isolatedCache(t)
-	require.NoError(t, os.MkdirAll(cache, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(cache, "git-hooks"), []byte("not a directory"), 0644))
-	dir := t.TempDir()
-	err := procrun.Run(context.Background(), []string{"sh", "-c", "touch started"}, procrun.Options{CPUs: 2, Dir: dir})
-	require.ErrorContains(t, err, "prepare CPU cap")
-	require.NoFileExists(t, filepath.Join(dir, "started"))
+	for _, name := range []string{"HOME unset", "read-only cache", "not a directory"} {
+		t.Run(name, func(t *testing.T) {
+			cache := isolatedCache(t)
+			switch name {
+			case "HOME unset":
+				t.Setenv("HOME", "")
+				t.Setenv("XDG_CACHE_HOME", "")
+			case "read-only cache":
+				require.NoError(t, os.MkdirAll(cache, 0755))
+				require.NoError(t, os.Chmod(cache, 0555))
+				t.Cleanup(func() { require.NoError(t, os.Chmod(cache, 0755)) })
+			case "not a directory":
+				require.NoError(t, os.MkdirAll(cache, 0755))
+				require.NoError(t, os.WriteFile(filepath.Join(cache, "git-hooks"), []byte("not a directory"), 0644))
+			}
+			var out, stderr bytes.Buffer
+			opt := procrun.Options{CPUs: 2, Env: []string{"NODE_OPTIONS=--trace-warnings"}, Stdout: &out, Stderr: &stderr}
+			argv := []string{"sh", "-c", `printf '%s' "$NODE_OPTIONS"`}
+			require.NoError(t, procrun.Run(context.Background(), argv, opt))
+			require.Equal(t, "--trace-warnings", out.String())
+			require.True(t, strings.HasPrefix(stderr.String(), "git-hooks: warning: CPU cap skipped: "), stderr.String())
+			require.Equal(t, 1, strings.Count(stderr.String(), "\n"))
+			opt.Stderr = nil
+			require.NoError(t, procrun.Run(context.Background(), argv, opt))
+		})
+	}
 }
 
 func TestCPUCapNode(t *testing.T) {
@@ -223,7 +242,8 @@ func TestDefaultOptions(t *testing.T) {
 		{"disabled", "1m", "0", "0", time.Minute, 0, 0},
 		{"bad", "soon", "many", "kind", 10 * time.Minute, 2, 10},
 		{"negative", "-1s", "-1", "-1", 10 * time.Minute, 2, 10},
-		{"zero timeout", "0s", "2", "10", 10 * time.Minute, 2, 10},
+		{"zero timeout", "0", "2", "10", 0, 2, 10},
+		{"zero duration", "0s", "2", "10", 0, 2, 10},
 		{"overflow", "999999999999999999999h", "999999999999999999999", "999999999999999999999", 10 * time.Minute, 2, 10},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -270,16 +290,31 @@ func TestEnvironmentAndIO(t *testing.T) {
 	require.Equal(t, dir, strings.TrimSpace(string(data)))
 }
 
-func TestFinishedStageLeavesNoBackgroundJobs(t *testing.T) {
+func TestSuccessfulStageLeavesBackgroundJobs(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	// One job ignores TERM, so the reaper must escalate to KILL.
-	err := procrun.Run(context.Background(), []string{"sh", "-c", `sleep 300 & echo $! > a; sh -c 'trap "" TERM; echo $$ > b; exec sleep 300' & while [ ! -s b ]; do :; done; exit 0`}, procrun.Options{Dir: dir})
+	err := procrun.Run(context.Background(), []string{"sh", "-c", `sleep 300 & echo $! > child; exit 0`}, procrun.Options{Dir: dir})
+	child := readPID(t, filepath.Join(dir, "child"))
+	t.Cleanup(func() { _ = syscall.Kill(child, syscall.SIGKILL) })
 	require.NoError(t, err)
-	a := readPID(t, filepath.Join(dir, "a"))
-	b := readPID(t, filepath.Join(dir, "b"))
-	t.Cleanup(func() { _ = syscall.Kill(a, syscall.SIGKILL); _ = syscall.Kill(b, syscall.SIGKILL) })
-	require.Eventually(t, func() bool {
-		return syscall.Kill(a, 0) == syscall.ESRCH && syscall.Kill(b, 0) == syscall.ESRCH
-	}, 5*time.Second, 20*time.Millisecond)
+	require.NoError(t, syscall.Kill(child, 0), "successful hooks may intentionally start background work")
+}
+
+func TestFailedStageReapsBackgroundJobs(t *testing.T) {
+	t.Parallel()
+	for _, ending := range []string{"exit 1", "kill -INT $$"} {
+		t.Run(ending, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			// One job ignores TERM, so the reaper must escalate to KILL.
+			err := procrun.Run(context.Background(), []string{"sh", "-c", `sleep 300 & echo $! > a; sh -c 'trap "" TERM; echo $$ > b; exec sleep 300' & while [ ! -s b ]; do :; done; ` + ending}, procrun.Options{Dir: dir})
+			a := readPID(t, filepath.Join(dir, "a"))
+			b := readPID(t, filepath.Join(dir, "b"))
+			t.Cleanup(func() { _ = syscall.Kill(a, syscall.SIGKILL); _ = syscall.Kill(b, syscall.SIGKILL) })
+			require.Error(t, err)
+			require.Eventually(t, func() bool {
+				return syscall.Kill(a, 0) == syscall.ESRCH && syscall.Kill(b, 0) == syscall.ESRCH
+			}, 5*time.Second, 20*time.Millisecond)
+		})
+	}
 }

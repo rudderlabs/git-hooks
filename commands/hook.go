@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -16,6 +17,10 @@ import (
 	"github.com/rudderlabs/git-hooks/internal/procrun"
 	"github.com/urfave/cli/v2"
 )
+
+// runningStandardHookEnv names the standard hook a git-hooks run is executing.
+// A nested run that resolves to the same file skips it instead of recursing.
+const runningStandardHookEnv = "GIT_HOOKS_RUNNING_STANDARD_HOOK"
 
 var Hooks = &cli.Command{
 	Name:  "hook",
@@ -41,9 +46,33 @@ func executeHook(hookName string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// 1. Global scripts (gitleaks) run uncapped and fail closed.
-	err := executeScriptsInDir(filepath.Join(os.Getenv("HOME"), ".git-hooks", hookName+".d"), args, nil)
+	// An empty HOME would make the global path relative and silently skip gitleaks.
+	home, err := os.UserHomeDir()
 	if err != nil {
+		return fmt.Errorf("finding global hooks: %w", err)
+	}
+
+	stdin, err := replayableStdin()
+	if err != nil {
+		return err
+	}
+	defer stdin.Close()
+
+	// 1. Global scripts (gitleaks) run uncapped and fail closed.
+	global := func(argv []string, _ []string) error {
+		in, release, err := stdin.Open()
+		if err != nil {
+			return err
+		}
+		defer release()
+		cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = in, os.Stdout, os.Stderr
+		return cmd.Run()
+	}
+	if err := executeScriptsInDir(filepath.Join(home, ".git-hooks", hookName+".d"), args, global); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 
@@ -53,19 +82,27 @@ func executeHook(hookName string) error {
 	}
 	opt := procrun.DefaultOptions()
 	opt.Dir = repoRoot
-	opt.Stdin, opt.Stdout, opt.Stderr = os.Stdin, os.Stdout, os.Stderr
-	opt.Env = os.Environ()
+	opt.Stdout, opt.Stderr = os.Stdout, os.Stderr
 	capped := func(argv []string, env []string) error {
 		o := opt
+		o.Env = os.Environ()
 		if env != nil {
 			o.Env = env
 		}
-		return procrun.Run(ctx, argv, o)
+		in, release, err := stdin.Open()
+		if err != nil {
+			return err
+		}
+		defer release()
+		o.Stdin = in
+		if err := procrun.Run(ctx, argv, o); err != nil {
+			return err
+		}
+		return ctx.Err()
 	}
 
 	// 2. Repo scripts.
-	err = executeScriptsInDir(filepath.Join(".git-hooks", hookName+".d"), args, capped)
-	if err != nil {
+	if err := executeScriptsInDir(filepath.Join(".git-hooks", hookName+".d"), args, capped); err != nil {
 		return err
 	}
 
@@ -97,8 +134,11 @@ func executeScriptsInDir(dir string, args []string, run runner) error {
 
 	for _, file := range files {
 		if !file.IsDir() {
-			scriptPath := filepath.Join(dir, file.Name())
-			if err := executeScript(scriptPath, args, run); err != nil {
+			scriptPath, err := filepath.Abs(filepath.Join(dir, file.Name()))
+			if err != nil {
+				return err
+			}
+			if err := run(append([]string{scriptPath}, args...), nil); err != nil {
 				return err
 			}
 		}
@@ -107,26 +147,10 @@ func executeScriptsInDir(dir string, args []string, run runner) error {
 	return nil
 }
 
-func executeScript(path string, args []string, run runner) error {
-	if run != nil {
-		abs, err := filepath.Abs(path)
-		if err != nil {
-			return err
-		}
-		return run(append([]string{abs}, args...), nil)
-	}
-	cmd := exec.Command(path, args...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Env = os.Environ()
-	return cmd.Run()
-}
-
 func executeStandardGitHook(ctx context.Context, hookName string, args []string, run runner) error {
-	path, ok := standardHookPath(ctx, hookName)
-	if !ok {
-		return nil
+	path, ok, err := standardHookPath(ctx, hookName)
+	if err != nil || !ok {
+		return err
 	}
 	info, err := os.Stat(path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -143,16 +167,77 @@ func executeStandardGitHook(ctx context.Context, hookName string, args []string,
 		fmt.Fprintf(os.Stderr, "git-hooks: WARNING: %s is not executable and was skipped\n", path)
 		return nil
 	}
-	return executeScript(path, args, run)
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return fmt.Errorf("resolving %s: %w", path, err)
+	}
+	if os.Getenv(runningStandardHookEnv) == resolved {
+		// A .git/hooks file that links to the global wrapper would call us forever.
+		fmt.Fprintf(os.Stderr, "git-hooks: WARNING: %s calls git-hooks again and was skipped\n", path)
+		return nil
+	}
+	return run(append([]string{path}, args...), append(os.Environ(), runningStandardHookEnv+"="+resolved))
 }
 
 // standardHookPath returns <common git dir>/hooks/<hook>. It must not use
 // `git rev-parse --git-path hooks/...`: that follows core.hooksPath, which points
 // back at the global git-hooks wrapper and makes the hook call itself forever.
-func standardHookPath(ctx context.Context, hookName string) (string, bool) {
+func standardHookPath(ctx context.Context, hookName string) (string, bool, error) {
 	out, err := exec.CommandContext(ctx, "git", "rev-parse", "--path-format=absolute", "--git-common-dir").Output()
-	if err != nil {
-		return "", false // Not inside a git repository, so there is no standard hook.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return "", false, ctxErr
 	}
-	return filepath.Join(strings.TrimSpace(string(out)), "hooks", hookName), true
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return "", false, nil // Not inside a git repository, so there is no standard hook.
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("finding the git directory: %w", err)
+	}
+	return filepath.Join(strings.TrimSpace(string(out)), "hooks", hookName), true, nil
+}
+
+// stdinSource gives every stage its own reader over the same hook input.
+// pre-push and post-rewrite pass data on stdin, and the first stage would
+// otherwise consume it all.
+type stdinSource struct {
+	file  *os.File // the terminal or /dev/null, shared as is
+	spool string   // a temp file holding piped input
+}
+
+func replayableStdin() (*stdinSource, error) {
+	info, err := os.Stdin.Stat()
+	if err != nil || info.Mode()&os.ModeCharDevice != 0 {
+		return &stdinSource{file: os.Stdin}, nil
+	}
+	f, err := os.CreateTemp("", "git-hooks-stdin-*")
+	if err != nil {
+		return nil, fmt.Errorf("buffering hook input: %w", err)
+	}
+	defer f.Close()
+	if _, err := io.Copy(f, os.Stdin); err != nil {
+		os.Remove(f.Name())
+		return nil, fmt.Errorf("buffering hook input: %w", err)
+	}
+	return &stdinSource{spool: f.Name()}, nil
+}
+
+// Open returns a reader positioned at the start of the hook input and a
+// release func. The shared terminal is never closed: it is our own stdin.
+func (s *stdinSource) Open() (*os.File, func(), error) {
+	if s.spool == "" {
+		return s.file, func() {}, nil
+	}
+	f, err := os.Open(s.spool)
+	if err != nil {
+		return nil, nil, err
+	}
+	return f, func() { _ = f.Close() }, nil
+}
+
+func (s *stdinSource) Close() error {
+	if s.spool == "" {
+		return nil
+	}
+	return os.Remove(s.spool)
 }

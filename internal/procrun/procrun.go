@@ -1,55 +1,19 @@
 //go:build darwin || linux
 
-// Package procrun limits the resources used by repository hook stages.
 package procrun
 
 import (
 	"context"
-	"crypto/sha256"
-	_ "embed"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 	"unsafe"
 )
-
-//go:embed cpucap.cjs
-var cpuPreload []byte
-
-// Options controls a stage's resource limits and execution environment.
-type Options struct {
-	Timeout time.Duration
-	CPUs    int
-	Nice    int
-	Env     []string
-	Dir     string
-	Stdin   io.Reader
-	Stdout  io.Writer
-	Stderr  io.Writer
-}
-
-// DefaultOptions reads hook limits from the environment, falling back on invalid values.
-func DefaultOptions() Options {
-	opt := Options{Timeout: 10 * time.Minute, CPUs: 2, Nice: 10}
-	if d, err := time.ParseDuration(os.Getenv("GIT_HOOKS_TIMEOUT")); err == nil && d > 0 {
-		opt.Timeout = d
-	}
-	if n, err := strconv.Atoi(os.Getenv("GIT_HOOKS_CPUS")); err == nil && n >= 0 {
-		opt.CPUs = n
-	}
-	if n, err := strconv.Atoi(os.Getenv("GIT_HOOKS_NICE")); err == nil && n >= 0 {
-		opt.Nice = n
-	}
-	return opt
-}
 
 // Run executes argv with the supplied resource limits.
 func Run(ctx context.Context, argv []string, opt Options) error {
@@ -71,33 +35,13 @@ func Run(ctx context.Context, argv []string, opt Options) error {
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env, cmd.Dir = opt.Env, opt.Dir
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = opt.Stdin, opt.Stdout, opt.Stderr
-	if opt.CPUs > 0 {
-		path, err := preloadPath()
-		if err != nil {
-			return fmt.Errorf("prepare CPU cap: %w", err)
-		}
-		cmd.Env = append(cmd.Environ(), "GIT_HOOKS_CPUS="+strconv.Itoa(opt.CPUs))
-		if strings.Contains(path, " ") {
-			if opt.Stderr != nil {
-				fmt.Fprintln(opt.Stderr, "git-hooks: warning: CPU cap skipped because the cache path contains spaces")
-			}
-		} else {
-			if err := writePreload(path); err != nil {
-				return fmt.Errorf("prepare CPU cap: %w", err)
-			}
-			env := cmd.Environ()
-			nodeOptions := ""
-			for _, entry := range env {
-				if value, ok := strings.CutPrefix(entry, "NODE_OPTIONS="); ok {
-					nodeOptions = value
-				}
-			}
-			cmd.Env = append(env, "NODE_OPTIONS="+nodeOptions+" --require="+path)
-		}
+	applyCPUCap(cmd, opt.CPUs)
+	var tty *os.File
+	if foregroundFiles(cmd) {
+		tty = foregroundTTY(func() (*os.File, error) {
+			return os.OpenFile("/dev/tty", os.O_RDWR, 0)
+		}, ttyGroup)
 	}
-	tty := foregroundTTY(func() (*os.File, error) {
-		return os.OpenFile("/dev/tty", os.O_RDWR, 0)
-	}, ttyGroup)
 	if tty != nil {
 		defer tty.Close()
 		defer restoreTerminal(tty)
@@ -106,11 +50,20 @@ func Run(ctx context.Context, argv []string, opt Options) error {
 	if err != nil {
 		return err
 	}
+	pid := cmd.Process.Pid
 	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
+	go func() {
+		if cmd.SysProcAttr.Foreground {
+			done <- waitForeground(cmd.Process, func() error { return relayStop(tty, pid) })
+		} else {
+			done <- cmd.Wait()
+		}
+	}()
 	select {
 	case err := <-done:
-		reapGroup(cmd.Process.Pid)
+		if err != nil {
+			reapGroup(pid)
+		}
 		return err
 	case <-ctx.Done():
 	}
@@ -118,13 +71,13 @@ func Run(ctx context.Context, argv []string, opt Options) error {
 	if parent.Err() == nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		message = fmt.Sprintf("stage timed out after %s and was killed", opt.Timeout)
 	}
-	stopErr := stopGroup(cmd.Process.Pid, done)
+	stopErr := stopGroup(pid, done)
 	return fmt.Errorf("%s: %w", message, errors.Join(ctx.Err(), stopErr))
 }
 
 func startStage(cmd *exec.Cmd, tty *os.File) (*exec.Cmd, error) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if tty != nil {
+	if tty != nil && foregroundFiles(cmd) {
 		// A failed Start consumes the command and its I/O pipes, so keep the fallback fresh.
 		foreground := exec.Command(cmd.Args[0], cmd.Args[1:]...)
 		foreground.Path, foreground.Err = cmd.Path, cmd.Err
@@ -140,6 +93,63 @@ func startStage(cmd *exec.Cmd, tty *os.File) (*exec.Cmd, error) {
 		restoreTerminal(tty)
 	}
 	return cmd, cmd.Start()
+}
+
+func foregroundFiles(cmd *exec.Cmd) bool {
+	// Wait4 cannot drain the I/O goroutines that exec.Cmd creates for non-file streams.
+	in, inOK := cmd.Stdin.(*os.File)
+	out, outOK := cmd.Stdout.(*os.File)
+	err, errOK := cmd.Stderr.(*os.File)
+	return inOK && in != nil && outOK && out != nil && errOK && err != nil
+}
+
+func waitForeground(process *os.Process, stopped func() error) error {
+	// Wait4 owns reaping here; Release closes OS handles without a second wait.
+	defer func() { _ = process.Release() }()
+	pid := process.Pid
+	var relayErr error
+	for {
+		var status syscall.WaitStatus
+		_, err := syscall.Wait4(pid, &status, syscall.WUNTRACED, nil)
+		if errors.Is(err, syscall.EINTR) {
+			continue
+		}
+		if err != nil {
+			return errors.Join(relayErr, err)
+		}
+		// Go's BSD WaitStatus labels SIGSTOP as continued; WCONTINUED is not requested here.
+		if status.Stopped() || status.Continued() {
+			if err := stopped(); err != nil {
+				relayErr = errors.Join(relayErr, err)
+				_ = syscall.Kill(-pid, syscall.SIGKILL)
+			}
+			continue
+		}
+		if status.Exited() || status.Signaled() {
+			if status.Exited() && status.ExitStatus() == 0 {
+				return relayErr
+			}
+			exitErr := &ExitError{Code: status.ExitStatus()}
+			if status.Signaled() {
+				exitErr.Signal = status.Signal()
+			}
+			return errors.Join(relayErr, exitErr)
+		}
+	}
+}
+
+func relayStop(tty *os.File, pid int) error {
+	if err := setTerminalGroup(tty, syscall.Getpgrp()); err != nil {
+		return err
+	}
+	// The shell must see the whole git job stop before it can restore its prompt.
+	if err := syscall.Kill(0, syscall.SIGTSTP); err != nil {
+		return err
+	}
+	if err := setTerminalGroup(tty, pid); err != nil {
+		return err
+	}
+	return syscall.Kill(-pid, syscall.SIGCONT)
 }
 
 func foregroundTTY(open func() (*os.File, error), group func(*os.File) (int, error)) *os.File {
@@ -165,53 +175,22 @@ func ttyGroup(tty *os.File) (int, error) {
 }
 
 func restoreTerminal(tty *os.File) {
+	_ = setTerminalGroup(tty, syscall.Getpgrp())
+}
+
+func setTerminalGroup(tty *os.File, pid int) error {
 	// The parent is now in the background, where TIOCSPGRP would otherwise stop it.
 	ignored := signal.Ignored(syscall.SIGTTOU)
 	signal.Ignore(syscall.SIGTTOU)
 	if !ignored {
 		defer signal.Reset(syscall.SIGTTOU)
 	}
-	group := int32(syscall.Getpgrp())
-	_, _, _ = syscall.Syscall(syscall.SYS_IOCTL, tty.Fd(), syscall.TIOCSPGRP, uintptr(unsafe.Pointer(&group)))
-}
-
-func preloadPath() (string, error) {
-	cache, err := os.UserCacheDir()
-	if err != nil {
-		return "", err
+	group := int32(pid)
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, tty.Fd(), syscall.TIOCSPGRP, uintptr(unsafe.Pointer(&group)))
+	if errno != 0 {
+		return errno
 	}
-	hash := sha256.Sum256(cpuPreload)
-	return filepath.Join(cache, "git-hooks", fmt.Sprintf("cpucap-%x.cjs", hash[:8])), nil
-}
-
-func writePreload(path string) error {
-	if _, err := os.Stat(path); err == nil {
-		return nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
-	}
-	f, err := os.CreateTemp(dir, ".cpucap-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	if _, err := f.Write(cpuPreload); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Chmod(0644); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	// Concurrent hook stages must never see a partially written preload.
-	return os.Rename(f.Name(), path)
+	return nil
 }
 
 func stopGroup(pid int, done <-chan error) error {
@@ -234,8 +213,7 @@ func stopGroup(pid int, done <-chan error) error {
 	return waitErr
 }
 
-// reapGroup kills what a finished stage left behind: background jobs of a
-// non-interactive shell ignore SIGINT, so Ctrl-C alone leaves them running.
+// Background jobs ignore SIGINT in non-interactive shells, so failed stages need group cleanup.
 func reapGroup(pid int) {
 	if errors.Is(syscall.Kill(-pid, 0), syscall.ESRCH) {
 		return
