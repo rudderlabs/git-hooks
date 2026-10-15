@@ -25,6 +25,8 @@ type Repository struct {
 	ConfigPath      string
 	CustomHooksPath string
 	HasCustomHooks  bool
+	// Err is set when the repo's config could not be read; the scan reports it and goes on.
+	Err error
 }
 
 // Result tracks the outcome of removing hooksPath config
@@ -52,7 +54,7 @@ func Scan(ctx context.Context, rootPath string, maxDepth int) ([]Repository, err
 	// Filter to only return repos with custom hooks
 	var reposWithHooks []Repository
 	for _, repo := range repos {
-		if repo.HasCustomHooks {
+		if repo.HasCustomHooks || repo.Err != nil {
 			reposWithHooks = append(reposWithHooks, repo)
 		}
 	}
@@ -81,7 +83,9 @@ func Clean(ctx context.Context, repos []Repository) Summary {
 		default:
 		}
 
-		if err := removeHooksPath(&repos[i]); err != nil {
+		if repos[i].Err != nil {
+			res.Error = repos[i].Err
+		} else if err := removeHooksPath(ctx, &repos[i]); err != nil {
 			res.Error = err
 		} else {
 			res.Removed = true
@@ -132,7 +136,13 @@ func walkDir(ctx context.Context, path string, depth, maxDepth int, callback fun
 	// Check if this is a Git repository
 	gitDir := filepath.Join(path, ".git")
 	if info, err := os.Stat(gitDir); err == nil && info.IsDir() {
-		repo := createRepository(path, gitDir)
+		repo, err := createRepository(ctx, path, gitDir)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			repo.Err = err
+		}
 		callback(repo)
 		return nil // Don't recurse into .git
 	}
@@ -179,7 +189,7 @@ func shouldSkip(path string) bool {
 }
 
 // createRepository creates a Repository struct with config info
-func createRepository(repoPath, gitDir string) Repository {
+func createRepository(ctx context.Context, repoPath, gitDir string) (Repository, error) {
 	configPath := filepath.Join(gitDir, "config")
 	repo := Repository{
 		Path:       repoPath,
@@ -187,54 +197,42 @@ func createRepository(repoPath, gitDir string) Repository {
 		ConfigPath: configPath,
 	}
 
-	// Check for custom hooksPath in config
-	customPath, hasCustom := getHooksPath(configPath)
-	repo.CustomHooksPath = customPath
-	repo.HasCustomHooks = hasCustom
-
-	return repo
-}
-
-// getHooksPath extracts hooksPath from .git/config using git config command
-func getHooksPath(configPath string) (string, bool) {
-	// Get the repository path (parent of .git directory)
-	repoPath := filepath.Dir(filepath.Dir(configPath))
-
-	// Use git config to read the value
-	cmd := exec.Command("git", "config", "--local", "core.hooksPath")
-	cmd.Dir = repoPath
-
-	output, err := cmd.Output()
+	values, err := LocalHooksPath(ctx, repoPath)
 	if err != nil {
-		// git config returns exit code 1 if key doesn't exist
-		return "", false
+		return repo, err
 	}
-
-	value := strings.TrimSpace(string(output))
-	if value == "" {
-		return "", false
-	}
-
-	return value, true
+	repo.CustomHooksPath = strings.Join(values, "\n")
+	repo.HasCustomHooks = len(values) > 0
+	return repo, nil
 }
 
-// removeHooksPath removes the hooksPath setting using git config command
-func removeHooksPath(repo *Repository) error {
-	// Use git config to unset the value
-	cmd := exec.Command("git", "config", "--local", "--unset", "core.hooksPath")
-	cmd.Dir = repo.Path
-
-	// Run the command
-	if err := cmd.Run(); err != nil {
-		// Check if it's an exit error
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			// Exit code 5 means the key didn't exist, which is fine
-			if exitErr.ExitCode() == 5 {
-				return nil
-			}
-		}
-		return fmt.Errorf("unsetting core.hooksPath: %w", err)
+func removeHooksPath(ctx context.Context, repo *Repository) error {
+	scopes := []string{"--local"}
+	if enabled, err := readConfig(ctx, repo.Path, "--local", "--type=bool", "--get", "extensions.worktreeConfig"); err == nil && strings.TrimSpace(string(enabled)) == "true" {
+		scopes = append(scopes, "--worktree")
 	}
-
+	for _, scope := range scopes {
+		cmd := exec.CommandContext(ctx, "git", "-C", repo.Path, "config", scope, "--unset-all", "core.hooksPath")
+		output, err := cmd.CombinedOutput()
+		if err == nil {
+			continue
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		var exitErr *exec.ExitError
+		// Exit 5 means this scope has no value; another scope may hold it.
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 5 {
+			continue
+		}
+		return fmt.Errorf("unsetting core.hooksPath (%s) in %s: %w: %s", scope, repo.Path, err, strings.TrimSpace(string(output)))
+	}
+	remaining, err := LocalHooksPath(ctx, repo.Path)
+	if err != nil {
+		return err
+	}
+	if len(remaining) > 0 {
+		return fmt.Errorf("core.hooksPath still set in %s: %s", repo.Path, strings.Join(remaining, ", "))
+	}
 	return nil
 }

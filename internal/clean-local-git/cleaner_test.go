@@ -47,10 +47,15 @@ func TestGetHooksPath_InvalidRepo(t *testing.T) {
 	err := os.Mkdir(filepath.Join(tempDir, ".git"), 0o755)
 	require.NoError(t, err)
 
-	// Should not find invalid repos
+	// A broken repository is reported without stopping the scan of its siblings.
 	repos, err := cleangit.Scan(context.Background(), tempDir, 1)
 	require.NoError(t, err)
-	require.Len(t, repos, 0)
+	require.Len(t, repos, 1)
+	require.Error(t, repos[0].Err)
+
+	summary := cleangit.Clean(context.Background(), repos)
+	require.Zero(t, summary.ConfigsRemoved)
+	require.Error(t, summary.Results[0].Error)
 }
 
 func TestRemoveHooksPath_Success(t *testing.T) {
@@ -97,10 +102,12 @@ func TestRemoveHooksPath_AlreadyRemoved(t *testing.T) {
 		CustomHooksPath: ".husky",
 	}
 
+	// The goal state already holds, so stale scan data is not a failure.
 	summary := cleangit.Clean(context.Background(), []cleangit.Repository{repo})
 	require.Equal(t, 1, summary.RepositoriesWithConfig)
-	// Should handle gracefully (git config --unset returns exit code 5 for non-existent key)
+	require.Equal(t, 1, summary.ConfigsRemoved)
 	require.Len(t, summary.Results, 1)
+	require.NoError(t, summary.Results[0].Error)
 }
 
 func TestRemoveHooksPath_PreservesOtherCoreSettings(t *testing.T) {
@@ -374,6 +381,8 @@ func TestScan_NonGitDirectory(t *testing.T) {
 // setupGitRepo creates a real git repository using git init
 func setupGitRepo(t *testing.T, dir string) {
 	t.Helper()
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("Failed to create directory: %v", err)
@@ -419,4 +428,165 @@ func getGitConfig(t *testing.T, repoPath, key string) (string, bool) {
 	}
 
 	return value, value != ""
+}
+
+func TestCleanMultipleHooksPaths(t *testing.T) {
+	dir := t.TempDir()
+	setupGitRepo(t, dir)
+	for _, value := range []string{"first", "second"} {
+		cmd := exec.Command("git", "-C", dir, "config", "--local", "--add", "core.hooksPath", value)
+		output, err := cmd.CombinedOutput()
+		require.NoError(t, err, "%s", output)
+	}
+	repos, err := cleangit.Scan(context.Background(), dir, 1)
+	require.NoError(t, err)
+	require.Len(t, repos, 1)
+	require.Contains(t, repos[0].CustomHooksPath, "first")
+	require.Contains(t, repos[0].CustomHooksPath, "second")
+	summary := cleangit.Clean(context.Background(), repos)
+	require.Equal(t, 1, summary.ConfigsRemoved)
+	require.NoError(t, summary.Results[0].Error)
+	_, exists := getGitConfig(t, dir, "core.hooksPath")
+	require.False(t, exists)
+}
+
+func TestCleanLockedConfig(t *testing.T) {
+	dir := t.TempDir()
+	setupGitRepo(t, dir)
+	setGitConfig(t, dir, "core.hooksPath", "first")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".git", "config.lock"), nil, 0o600))
+	summary := cleangit.Clean(context.Background(), []cleangit.Repository{{Path: dir}})
+	require.Zero(t, summary.ConfigsRemoved)
+	require.Len(t, summary.Results, 1)
+	require.False(t, summary.Results[0].Removed)
+	require.Error(t, summary.Results[0].Error)
+	value, exists := getGitConfig(t, dir, "core.hooksPath")
+	require.True(t, exists)
+	require.Equal(t, "first", value)
+}
+
+func TestLocalHooksPath(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		local    []string
+		worktree bool
+		want     []string
+	}{
+		{name: "none"},
+		{name: "one", local: []string{"first"}, want: []string{"first"}},
+		{name: "two", local: []string{"first", "second"}, want: []string{"first", "second"}},
+		{name: "empty value", local: []string{""}, want: []string{""}},
+		{name: "worktree", local: []string{"first"}, worktree: true, want: []string{"first", "worktree"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			setupGitRepo(t, dir)
+			global := filepath.Join(t.TempDir(), "global")
+			require.NoError(t, os.WriteFile(global, []byte("[core]\n hooksPath = global\n"), 0o600))
+			t.Setenv("GIT_CONFIG_GLOBAL", global)
+			for _, value := range tc.local {
+				output, err := exec.Command("git", "-C", dir, "config", "--local", "--add", "core.hooksPath", value).CombinedOutput()
+				require.NoError(t, err, "%s", output)
+			}
+			if tc.worktree {
+				setGitConfig(t, dir, "extensions.worktreeConfig", "true")
+				output, err := exec.Command("git", "-C", dir, "config", "--worktree", "core.hooksPath", "worktree").CombinedOutput()
+				require.NoError(t, err, "%s", output)
+			}
+			values, err := cleangit.LocalHooksPath(context.Background(), dir)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, values)
+		})
+	}
+}
+
+func TestLocalHooksPathErrors(t *testing.T) {
+	t.Parallel()
+	_, err := cleangit.LocalHooksPath(context.Background(), t.TempDir())
+	require.Error(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = cleangit.LocalHooksPath(ctx, t.TempDir())
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestLocalHooksPathConfigErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		extension string
+		config    string
+	}{
+		{"invalid extension", "invalid", ""},
+		{"invalid worktree config", "true", "[broken"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			setupGitRepo(t, dir)
+			setGitConfig(t, dir, "extensions.worktreeConfig", tc.extension)
+			if tc.config != "" {
+				require.NoError(t, os.WriteFile(filepath.Join(dir, ".git", "config.worktree"), []byte(tc.config), 0o600))
+			}
+			_, err := cleangit.LocalHooksPath(context.Background(), dir)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), dir)
+		})
+	}
+}
+
+func TestCleanContinuesAfterFailure(t *testing.T) {
+	root := t.TempDir()
+	var repos []cleangit.Repository
+	for _, name := range []string{"locked", "writable"} {
+		dir := filepath.Join(root, name)
+		setupGitRepo(t, dir)
+		setGitConfig(t, dir, "core.hooksPath", "hooks")
+		repos = append(repos, cleangit.Repository{Path: dir})
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(repos[0].Path, ".git", "config.lock"), nil, 0o600))
+	summary := cleangit.Clean(context.Background(), repos)
+	require.Equal(t, 1, summary.ConfigsRemoved)
+	require.Len(t, summary.Results, 2)
+	require.Error(t, summary.Results[0].Error)
+	require.False(t, summary.Results[0].Removed)
+	require.NoError(t, summary.Results[1].Error)
+	require.True(t, summary.Results[1].Removed)
+}
+
+func TestScanContinuesPastBrokenRepo(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "broken", ".git"), 0o755))
+	good := filepath.Join(root, "good")
+	require.NoError(t, os.Mkdir(good, 0o755))
+	setupGitRepo(t, good)
+	setGitConfig(t, good, "core.hooksPath", ".husky")
+
+	repos, err := cleangit.Scan(context.Background(), root, 2)
+	require.NoError(t, err)
+	require.Len(t, repos, 2)
+	byPath := map[string]cleangit.Repository{}
+	for _, r := range repos {
+		byPath[filepath.Base(r.Path)] = r
+	}
+	require.Error(t, byPath["broken"].Err)
+	require.NoError(t, byPath["good"].Err)
+	require.Equal(t, ".husky", byPath["good"].CustomHooksPath)
+}
+
+func TestCleanWorktreeConfig(t *testing.T) {
+	dir := t.TempDir()
+	setupGitRepo(t, dir)
+	setGitConfig(t, dir, "extensions.worktreeConfig", "true")
+	cmd := exec.Command("git", "-C", dir, "config", "--worktree", "core.hooksPath", ".husky/_")
+	require.NoError(t, cmd.Run())
+
+	repos, err := cleangit.Scan(context.Background(), dir, 1)
+	require.NoError(t, err)
+	require.Len(t, repos, 1)
+	require.Equal(t, ".husky/_", repos[0].CustomHooksPath)
+
+	summary := cleangit.Clean(context.Background(), repos)
+	require.NoError(t, summary.Results[0].Error)
+	values, err := cleangit.LocalHooksPath(context.Background(), dir)
+	require.NoError(t, err)
+	require.Empty(t, values)
 }

@@ -1,10 +1,19 @@
 package commands
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"strings"
+	"syscall"
 
+	"github.com/rudderlabs/git-hooks/internal/husky"
+	"github.com/rudderlabs/git-hooks/internal/procrun"
 	"github.com/urfave/cli/v2"
 )
 
@@ -22,33 +31,62 @@ var Hooks = &cli.Command{
 }
 
 func executeHook(hookName string) error {
-	// 1. Execute global scripts
-	err := executeScriptsInDir(filepath.Join(os.Getenv("HOME"), ".git-hooks", hookName+".d"))
+	// Skip binary name (os.Args[0]), "hook" subcommand (os.Args[1]), and hook name (os.Args[2])
+	var args []string
+	if len(os.Args) > 3 {
+		args = os.Args[3:]
+	}
+
+	// Repo stages run in their own process group, so Ctrl-C must reach them through us.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// 1. Global scripts (gitleaks) run uncapped and fail closed.
+	err := executeScriptsInDir(filepath.Join(os.Getenv("HOME"), ".git-hooks", hookName+".d"), args, nil)
 	if err != nil {
 		return err
 	}
 
-	// 2. Execute local scripts
-	err = executeScriptsInDir(filepath.Join(".git-hooks", hookName+".d"))
+	repoRoot, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	opt := procrun.DefaultOptions()
+	opt.Dir = repoRoot
+	opt.Stdin, opt.Stdout, opt.Stderr = os.Stdin, os.Stdout, os.Stderr
+	opt.Env = os.Environ()
+	capped := func(argv []string, env []string) error {
+		o := opt
+		if env != nil {
+			o.Env = env
+		}
+		return procrun.Run(ctx, argv, o)
+	}
+
+	// 2. Repo scripts.
+	err = executeScriptsInDir(filepath.Join(".git-hooks", hookName+".d"), args, capped)
 	if err != nil {
 		return err
 	}
 
-	// 3. Execute Husky scripts (try both modern and legacy formats)
-	err = executeHuskyGitHooks(hookName)
-	if err != nil {
-		return err
+	// 3. Husky: exactly one entry point per hook.
+	plan := husky.Resolve(repoRoot, hookName, args, os.Environ())
+	switch plan.Action {
+	case husky.Skip:
+		fmt.Fprintf(os.Stderr, "git-hooks: WARNING: husky %s skipped: %s\n", hookName, plan.Reason)
+	case husky.Run:
+		if err := capped(plan.Argv, plan.Env); err != nil {
+			return fmt.Errorf("husky %s: %w", hookName, err)
+		}
 	}
 
-	// 4. Execute standard Git hook for backwards compatibility
-	gitDir := os.Getenv("GIT_DIR")
-	if gitDir == "" {
-		gitDir = ".git"
-	}
-	return executeStandardGitHook(filepath.Join(gitDir, "hooks", hookName))
+	// 4. Standard Git hook for backwards compatibility.
+	return executeStandardGitHook(ctx, hookName, args, capped)
 }
 
-func executeScriptsInDir(dir string) error {
+type runner func(argv []string, env []string) error
+
+func executeScriptsInDir(dir string, args []string, run runner) error {
 	files, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -60,7 +98,7 @@ func executeScriptsInDir(dir string) error {
 	for _, file := range files {
 		if !file.IsDir() {
 			scriptPath := filepath.Join(dir, file.Name())
-			if err := executeScript(scriptPath); err != nil {
+			if err := executeScript(scriptPath, args, run); err != nil {
 				return err
 			}
 		}
@@ -69,12 +107,13 @@ func executeScriptsInDir(dir string) error {
 	return nil
 }
 
-func executeScript(path string) error {
-	// Skip binary name (os.Args[0]), "hook" subcommand (os.Args[1]), and hook name (os.Args[2])
-	// Pass only the actual hook arguments starting from os.Args[3]
-	var args []string
-	if len(os.Args) > 3 {
-		args = os.Args[3:]
+func executeScript(path string, args []string, run runner) error {
+	if run != nil {
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return err
+		}
+		return run(append([]string{abs}, args...), nil)
 	}
 	cmd := exec.Command(path, args...)
 	cmd.Stdin = os.Stdin
@@ -84,42 +123,36 @@ func executeScript(path string) error {
 	return cmd.Run()
 }
 
-func executeStandardGitHook(path string) error {
-	if info, err := os.Stat(path); err == nil {
-		// Check if it's a regular file and executable
-		if info.Mode().IsRegular() && (info.Mode()&0o111) != 0 {
-			return executeScript(path)
-		}
-		// If it exists but is not executable, skip silently
+func executeStandardGitHook(ctx context.Context, hookName string, args []string, run runner) error {
+	path, ok := standardHookPath(ctx, hookName)
+	if !ok {
 		return nil
 	}
-	return nil // Hook doesn't exist, which is fine
-}
-
-func executeHuskyGitHooks(hookName string) error {
-	// Try modern Husky format first (.husky/hookname)
-	modernPath := filepath.Join(".husky", hookName)
-	if err := executeHuskyGitHook(modernPath); err != nil {
-		return err
-	}
-
-	// Try legacy Husky format (.husky/_/hookname)
-	legacyPath := filepath.Join(".husky/_", hookName)
-	if err := executeHuskyGitHook(legacyPath); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func executeHuskyGitHook(path string) error {
-	if info, err := os.Stat(path); err == nil {
-		// Check if it's a regular file and executable
-		if info.Mode().IsRegular() && (info.Mode()&0o111) != 0 {
-			return executeScript(path)
-		}
-		// If it exists but is not executable, skip silently
+	info, err := os.Stat(path)
+	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
-	return nil // Hook doesn't exist, which is fine
+	if err != nil {
+		return fmt.Errorf("checking %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil
+	}
+	if info.Mode()&0o111 == 0 {
+		// Git itself ignores such hooks; say so, because people expect it to run.
+		fmt.Fprintf(os.Stderr, "git-hooks: WARNING: %s is not executable and was skipped\n", path)
+		return nil
+	}
+	return executeScript(path, args, run)
+}
+
+// standardHookPath returns <common git dir>/hooks/<hook>. It must not use
+// `git rev-parse --git-path hooks/...`: that follows core.hooksPath, which points
+// back at the global git-hooks wrapper and makes the hook call itself forever.
+func standardHookPath(ctx context.Context, hookName string) (string, bool) {
+	out, err := exec.CommandContext(ctx, "git", "rev-parse", "--path-format=absolute", "--git-common-dir").Output()
+	if err != nil {
+		return "", false // Not inside a git repository, so there is no standard hook.
+	}
+	return filepath.Join(strings.TrimSpace(string(out)), "hooks", hookName), true
 }

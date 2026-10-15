@@ -6,7 +6,7 @@ Git Hooks is a flexible and powerful tool for managing and executing Git hooks a
 
 Git Hooks must be configured as your Git hook manager (via `core.hooksPath`), but is designed to execute hooks from other tools in a hierarchical order:
 
-- **[Husky](https://typicode.github.io/husky/)**: Fully compatible with both modern (`.husky/<hook-name>`) and legacy (`.husky/_/<hook-name>`) Husky formats. Once git-hooks is configured, it will automatically detect and execute your Husky hooks. Your project-specific Husky hooks continue to work without modification.
+- **[Husky](https://typicode.github.io/husky/)**: Works with husky v7, v8 and v9. git-hooks runs each husky hook exactly once. Your husky hooks need no changes.
 
 - **[pre-commit](https://pre-commit.com/)**: Compatible with pre-commit framework. You can use pre-commit for project-specific hooks while using git-hooks for global hooks across all repositories.
 
@@ -102,7 +102,10 @@ This will scan the specified directory (or current directory if not specified) f
 
 - `--max-depth <num>` - Maximum directory depth to search (default: 10)
 - `--verbose` - Show detailed output
-- `--auto-fix` - Automatically remove local hooksPath overrides after confirmation
+- `--auto-fix` - Remove local hooksPath overrides after confirmation
+- `--yes`, `-y` - Skip the confirmation. Required with `--auto-fix` when stdin is not a terminal.
+
+Flags work before or after PATH. The command exits non-zero when it cannot remove an override.
 
 **Example:**
 
@@ -134,7 +137,23 @@ When a Git hook is triggered, Git Hooks executes hooks in the following order:
 
 1. Global hooks in `~/.git-hooks/<hook-name>.d/`
 2. Local repository hooks in `$GIT_DIR/.git-hooks/<hook-name>.d/`
-3. Husky hooks in `.husky/<hook-name>` (modern) or `.husky/_/<hook-name>` (legacy)
+3. The husky hook `.husky/<hook-name>`, once
 4. Standard Git hook in `$GIT_DIR/hooks/<hook-name>`
 
-This order ensures that you can have a cascading set of hooks, from the most global to the most specific, with Husky integration for projects that use it.
+A failing global hook stops the commit before any repository hook runs. gitleaks is a global hook.
+
+### Husky
+
+- husky v9 with `.husky/_/h` installed: git-hooks runs `.husky/_/<hook-name>`, husky's own wrapper.
+- Otherwise: git-hooks runs `sh -e .husky/<hook-name>` with `node_modules/.bin` on `PATH`. The exec bit does not matter.
+- git-hooks skips the husky hook with a warning when `HUSKY=0` is set, when the repository has no `node_modules`, or when a v7/v8 hook sources a missing `.husky/_/husky.sh`. Global hooks still run. CI runs the same checks.
+
+### Resource limits for repository hooks
+
+Steps 2 to 4 run with limits, so a heavy hook (jest, tsc) cannot freeze the machine:
+
+- `GIT_HOOKS_TIMEOUT` (default `10m`): kills the hook and its child processes after this time.
+- `GIT_HOOKS_CPUS` (default `2`): Node sees this many CPUs, so jest and vitest start fewer workers. `0` turns the cap off. An explicit `--maxWorkers` still wins.
+- `GIT_HOOKS_NICE` (default `10`): runs the hook at this nice level. `0` turns it off.
+
+Each hook runs in its own process group. git-hooks passes the terminal to it, so a hook can still read `/dev/tty`. Ctrl-C stops the hook and its background jobs.
