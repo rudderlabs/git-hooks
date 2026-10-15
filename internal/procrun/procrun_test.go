@@ -106,7 +106,7 @@ func TestNodeOptionsAndCache(t *testing.T) {
 	require.Regexp(t, `^cpucap-[a-f0-9]+\.cjs$`, filepath.Base(path))
 	info, err := os.Stat(path)
 	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0644), info.Mode().Perm())
+	require.Equal(t, os.FileMode(0o644), info.Mode().Perm())
 	out.Reset()
 	require.NoError(t, procrun.Run(context.Background(), argv, opt))
 	again, err := os.Stat(path)
@@ -200,12 +200,12 @@ func TestCPUCapCacheFailure(t *testing.T) {
 				t.Setenv("HOME", "")
 				t.Setenv("XDG_CACHE_HOME", "")
 			case "read-only cache":
-				require.NoError(t, os.MkdirAll(cache, 0755))
-				require.NoError(t, os.Chmod(cache, 0555))
-				t.Cleanup(func() { require.NoError(t, os.Chmod(cache, 0755)) })
+				require.NoError(t, os.MkdirAll(cache, 0o755))
+				require.NoError(t, os.Chmod(cache, 0o555))
+				t.Cleanup(func() { require.NoError(t, os.Chmod(cache, 0o755)) })
 			case "not a directory":
-				require.NoError(t, os.MkdirAll(cache, 0755))
-				require.NoError(t, os.WriteFile(filepath.Join(cache, "git-hooks"), []byte("not a directory"), 0644))
+				require.NoError(t, os.MkdirAll(cache, 0o755))
+				require.NoError(t, os.WriteFile(filepath.Join(cache, "git-hooks"), []byte("not a directory"), 0o644))
 			}
 			var out, stderr bytes.Buffer
 			opt := procrun.Options{CPUs: 2, Env: []string{"NODE_OPTIONS=--trace-warnings"}, Stdout: &out, Stderr: &stderr}

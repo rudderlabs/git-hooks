@@ -110,7 +110,7 @@ func executeHook(hookName string) error {
 	defer stdin.Close()
 
 	// 1. Global scripts (gitleaks) run uncapped and fail closed.
-	global := func(argv []string, _ []string) error {
+	global := func(argv, _ []string) error {
 		if err := afterStage(nil); err != nil {
 			return err
 		}
@@ -133,7 +133,7 @@ func executeHook(hookName string) error {
 	opt := procrun.DefaultOptions()
 	opt.Dir = repoRoot
 	opt.Stdout, opt.Stderr = os.Stdout, os.Stderr
-	capped := func(argv []string, env []string) error {
+	capped := func(argv, env []string) error {
 		if err := afterStage(nil); err != nil {
 			return err
 		}
@@ -171,7 +171,7 @@ func executeHook(hookName string) error {
 	return afterStage(executeStandardGitHook(ctx, hookName, args, capped))
 }
 
-type runner func(argv []string, env []string) error
+type runner func(argv, env []string) error
 
 // countStages counts the stages that will get the hook input. With none,
 // git-hooks never reads stdin or touches disk: most reference-transaction

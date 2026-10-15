@@ -35,7 +35,7 @@ type Plan struct {
 var legacySource = regexp.MustCompile(`(?m)^[\t ]*(?:\.|source)[\t ]+[^#\r\n]*_/husky\.sh["']*[\t ]*(?:\r?$|#|;)`)
 
 // Resolve inspects the repository without executing hooks or changing its environment.
-func Resolve(repoRoot, hookName string, args []string, environ []string) Plan {
+func Resolve(repoRoot, hookName string, args, environ []string) Plan {
 	repoRoot, err := filepath.Abs(repoRoot)
 	if err != nil {
 		return Plan{Action: Skip, Reason: "Cannot resolve repository root: " + err.Error()}

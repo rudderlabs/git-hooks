@@ -93,7 +93,7 @@ func writePreload(path string) error {
 		return err
 	}
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	f, err := os.CreateTemp(dir, ".cpucap-*")
@@ -105,7 +105,7 @@ func writePreload(path string) error {
 		f.Close()
 		return err
 	}
-	if err := f.Chmod(0644); err != nil {
+	if err := f.Chmod(0o644); err != nil {
 		f.Close()
 		return err
 	}

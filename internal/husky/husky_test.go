@@ -19,9 +19,9 @@ func TestResolveNone(t *testing.T) {
 			root := t.TempDir()
 			switch layout {
 			case "stubs only":
-				writeFile(t, root, ".husky/_/pre-commit", "exit 0\n", 0644)
+				writeFile(t, root, ".husky/_/pre-commit", "exit 0\n", 0o644)
 			case "hook is directory":
-				require.NoError(t, os.MkdirAll(filepath.Join(root, ".husky/pre-commit"), 0755))
+				require.NoError(t, os.MkdirAll(filepath.Join(root, ".husky/pre-commit"), 0o755))
 			}
 			require.Equal(t, husky.Plan{Action: husky.None}, husky.Resolve(root, "pre-commit", nil, []string{"HUSKY=0"}))
 		})
@@ -34,16 +34,16 @@ func TestResolveMissingNodeModules(t *testing.T) {
 		t.Run(layout, func(t *testing.T) {
 			t.Parallel()
 			root := t.TempDir()
-			writeFile(t, root, ".husky/pre-commit", "exit 0\n", 0644)
+			writeFile(t, root, ".husky/pre-commit", "exit 0\n", 0o644)
 			switch layout {
 			case "regular file":
-				writeFile(t, root, "node_modules", "", 0644)
+				writeFile(t, root, "node_modules", "", 0o644)
 			case "v9 runtime":
-				writeFile(t, root, ".husky/_/h", "exit 0\n", 0644)
-				writeFile(t, root, ".husky/_/pre-commit", "exit 0\n", 0644)
+				writeFile(t, root, ".husky/_/h", "exit 0\n", 0o644)
+				writeFile(t, root, ".husky/_/pre-commit", "exit 0\n", 0o644)
 			case "pnp directories":
-				require.NoError(t, os.Mkdir(filepath.Join(root, ".pnp.cjs"), 0755))
-				require.NoError(t, os.Mkdir(filepath.Join(root, ".pnp.js"), 0755))
+				require.NoError(t, os.Mkdir(filepath.Join(root, ".pnp.cjs"), 0o755))
+				require.NoError(t, os.Mkdir(filepath.Join(root, ".pnp.js"), 0o755))
 			}
 			plan := husky.Resolve(root, "pre-commit", nil, nil)
 			require.Equal(t, husky.Skip, plan.Action)
@@ -60,11 +60,11 @@ func TestResolveInstallLayouts(t *testing.T) {
 		t.Run(layout, func(t *testing.T) {
 			t.Parallel()
 			root := t.TempDir()
-			writeFile(t, root, ".husky/pre-commit", "printf '%s\\n' \"$PATH\"\n", 0644)
+			writeFile(t, root, ".husky/pre-commit", "printf '%s\\n' \"$PATH\"\n", 0o644)
 			if strings.HasPrefix(layout, ".pnp.") {
-				writeFile(t, root, layout, "", 0644)
+				writeFile(t, root, layout, "", 0o644)
 			} else {
-				require.NoError(t, os.MkdirAll(filepath.Join(root, layout), 0755))
+				require.NoError(t, os.MkdirAll(filepath.Join(root, layout), 0o755))
 			}
 			plan := husky.Resolve(root, "pre-commit", nil, []string{"PATH=/usr/bin:/bin"})
 			require.Equal(t, husky.Run, plan.Action)
@@ -103,8 +103,8 @@ func TestResolveMissingLegacyHelper(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			root := t.TempDir()
-			writeFile(t, root, ".husky/pre-commit", tc.hook, 0755)
-			require.NoError(t, os.Mkdir(filepath.Join(root, "node_modules"), 0755))
+			writeFile(t, root, ".husky/pre-commit", tc.hook, 0o755)
+			require.NoError(t, os.Mkdir(filepath.Join(root, "node_modules"), 0o755))
 			plan := husky.Resolve(root, "pre-commit", nil, nil)
 			require.Equal(t, husky.Skip, plan.Action)
 			require.Contains(t, plan.Reason, ".husky/_/husky.sh")
@@ -121,8 +121,8 @@ func TestResolveV9Runtime(t *testing.T) {
 		name string
 		mode os.FileMode
 	}{
-		{"non executable", 0644},
-		{"executable", 0755},
+		{"non executable", 0o644},
+		{"executable", 0o755},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -130,12 +130,12 @@ func TestResolveV9Runtime(t *testing.T) {
 			counter := filepath.Join(root, "counter")
 			marker := filepath.Join(root, "marker")
 			writeFile(t, root, ".husky/pre-commit", "printf 'hook\\n' >> \"$COUNTER\"\nprintf '%s\\n' \"$INIT_MARKER\" \"$@\" > \"$MARKER\"\n", tc.mode)
-			writeFile(t, root, ".husky/_/pre-commit", ". \"$(dirname \"$0\")/h\"\n", 0644)
-			writeFile(t, root, ".husky/_/h", v9Helper, 0644)
+			writeFile(t, root, ".husky/_/pre-commit", ". \"$(dirname \"$0\")/h\"\n", 0o644)
+			writeFile(t, root, ".husky/_/h", v9Helper, 0o644)
 			home := t.TempDir()
-			writeFile(t, home, ".huskyrc", "exit 99\n", 0644)
-			writeFile(t, home, ".config/husky/init.sh", "export INIT_MARKER=loaded\n", 0644)
-			require.NoError(t, os.Mkdir(filepath.Join(root, "node_modules"), 0755))
+			writeFile(t, home, ".huskyrc", "exit 99\n", 0o644)
+			writeFile(t, home, ".config/husky/init.sh", "export INIT_MARKER=loaded\n", 0o644)
+			require.NoError(t, os.Mkdir(filepath.Join(root, "node_modules"), 0o755))
 			env := []string{"HOME=" + home, "PATH=/usr/bin:/bin", "COUNTER=" + counter, "MARKER=" + marker}
 			args := []string{"message with spaces", "--flag"}
 			plan := husky.Resolve(root, "pre-commit", args, env)
@@ -191,16 +191,16 @@ func TestResolveFallback(t *testing.T) {
 			t.Parallel()
 			root := filepath.Join(t.TempDir(), "repo with spaces")
 			marker := filepath.Join(root, "marker")
-			writeFile(t, root, ".husky/pre-commit", tc.prefix+"lint-staged \"$@\"\n", 0644)
-			writeFile(t, root, "node_modules/.bin/lint-staged", "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$MARKER\"\n", 0755)
+			writeFile(t, root, ".husky/pre-commit", tc.prefix+"lint-staged \"$@\"\n", 0o644)
+			writeFile(t, root, "node_modules/.bin/lint-staged", "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$MARKER\"\n", 0o755)
 			if len(tc.paths) == 0 || tc.paths[len(tc.paths)-1] == "" {
 				require.NoError(t, os.Symlink("/bin/sh", filepath.Join(root, "node_modules/.bin/sh")))
 			}
 			if tc.helper {
-				writeFile(t, root, ".husky/_/husky.sh", legacyHelper, 0644)
+				writeFile(t, root, ".husky/_/husky.sh", legacyHelper, 0o644)
 			}
 			if tc.runtime != "" {
-				writeFile(t, root, ".husky/_/"+tc.runtime, "exit 99\n", 0644)
+				writeFile(t, root, ".husky/_/"+tc.runtime, "exit 99\n", 0o644)
 			}
 			env := []string{"MARKER=" + marker, "HUSKY=1", "husky_skip_init=0"}
 			for _, path := range tc.paths {
@@ -302,10 +302,10 @@ func TestResolveV9FallbackInit(t *testing.T) {
 			case "empty xdg":
 				env = append(env, "XDG_CONFIG_HOME=")
 			}
-			writeFile(t, home, ".huskyrc", "exit 99\n", 0644)
-			writeFile(t, configRoot, "husky/init.sh", "export INIT_MARKER=loaded\n", 0644)
-			writeFile(t, root, ".husky/pre-commit", "printf '%s\\n' \"$INIT_MARKER\" \"$@\"\n", 0644)
-			require.NoError(t, os.Mkdir(filepath.Join(root, "node_modules"), 0755))
+			writeFile(t, home, ".huskyrc", "exit 99\n", 0o644)
+			writeFile(t, configRoot, "husky/init.sh", "export INIT_MARKER=loaded\n", 0o644)
+			writeFile(t, root, ".husky/pre-commit", "printf '%s\\n' \"$INIT_MARKER\" \"$@\"\n", 0o644)
+			require.NoError(t, os.Mkdir(filepath.Join(root, "node_modules"), 0o755))
 			plan := husky.Resolve(root, "pre-commit", []string{"arg with spaces", "--flag"}, env)
 			require.Equal(t, husky.Run, plan.Action)
 			cmd := exec.Command(plan.Argv[0], plan.Argv[1:]...)
@@ -324,10 +324,10 @@ func TestResolveLegacyInit(t *testing.T) {
 			t.Parallel()
 			root := t.TempDir()
 			home := t.TempDir()
-			writeFile(t, home, ".huskyrc", "export INIT_MARKER=loaded\n", 0644)
-			writeFile(t, root, ".husky/_/husky.sh", legacyHelper, 0644)
-			writeFile(t, root, ".husky/pre-commit", source+"\nprintf '%s\\n' \"$INIT_MARKER\" \"$@\"\n", 0644)
-			require.NoError(t, os.Mkdir(filepath.Join(root, "node_modules"), 0755))
+			writeFile(t, home, ".huskyrc", "export INIT_MARKER=loaded\n", 0o644)
+			writeFile(t, root, ".husky/_/husky.sh", legacyHelper, 0o644)
+			writeFile(t, root, ".husky/pre-commit", source+"\nprintf '%s\\n' \"$INIT_MARKER\" \"$@\"\n", 0o644)
+			require.NoError(t, os.Mkdir(filepath.Join(root, "node_modules"), 0o755))
 			plan := husky.Resolve(root, "pre-commit", []string{"arg with spaces", "--flag"}, []string{
 				"HOME=" + home, "PATH=/usr/bin:/bin", "husky_skip_init=0", "husky_skip_init=1",
 			})
@@ -344,7 +344,7 @@ func TestResolveLegacyInit(t *testing.T) {
 func writeFile(t *testing.T, root, name, content string, mode os.FileMode) {
 	t.Helper()
 	path := filepath.Join(root, name)
-	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
 	require.NoError(t, os.WriteFile(path, []byte(content), mode))
 }
 
@@ -354,7 +354,7 @@ func TestResolveDisabled(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			root := t.TempDir()
-			writeFile(t, root, ".husky/"+name, "exit 0\n", 0644)
+			writeFile(t, root, ".husky/"+name, "exit 0\n", 0o644)
 			plan := husky.Resolve(root, name, nil, []string{"HUSKY=0"})
 			require.Equal(t, husky.Skip, plan.Action)
 			require.Contains(t, plan.Reason, "HUSKY=0")
@@ -379,8 +379,8 @@ func TestResolveLastHuskyEntry(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			root := t.TempDir()
-			writeFile(t, root, ".husky/pre-commit", "printf '%s' \"$HUSKY\"\n", 0644)
-			require.NoError(t, os.Mkdir(filepath.Join(root, "node_modules"), 0755))
+			writeFile(t, root, ".husky/pre-commit", "printf '%s' \"$HUSKY\"\n", 0o644)
+			require.NoError(t, os.Mkdir(filepath.Join(root, "node_modules"), 0o755))
 			env := append([]string{"PATH=/usr/bin:/bin"}, tc.env...)
 			plan := husky.Resolve(root, "pre-commit", nil, env)
 			require.Equal(t, tc.action, plan.Action)
@@ -403,9 +403,9 @@ func TestResolveV9FallbackInitDisablesHusky(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()
 	// husky v9 checks HUSKY after sourcing init.sh, so init.sh can turn hooks off.
-	writeFile(t, home, ".config/husky/init.sh", "export HUSKY=0\n", 0644)
-	writeFile(t, root, ".husky/pre-commit", "echo HOOK-RAN\nexit 7\n", 0644)
-	require.NoError(t, os.Mkdir(filepath.Join(root, "node_modules"), 0755))
+	writeFile(t, home, ".config/husky/init.sh", "export HUSKY=0\n", 0o644)
+	writeFile(t, root, ".husky/pre-commit", "echo HOOK-RAN\nexit 7\n", 0o644)
+	require.NoError(t, os.Mkdir(filepath.Join(root, "node_modules"), 0o755))
 	plan := husky.Resolve(root, "pre-commit", nil, []string{"HOME=" + home, "PATH=/usr/bin:/bin"})
 	require.Equal(t, husky.Run, plan.Action)
 	cmd := exec.Command(plan.Argv[0], plan.Argv[1:]...)
@@ -419,9 +419,9 @@ func TestResolveV9DeprecationStubKeepsErrexit(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	// husky v9 writes this stub to .husky/_/husky.sh; it does not re-run the hook with sh -e.
-	writeFile(t, root, ".husky/_/husky.sh", "echo \"husky - DEPRECATED\"\n", 0644)
-	writeFile(t, root, ".husky/pre-commit", ". \"$(dirname -- \"$0\")/_/husky.sh\"\nfalse\necho after-false\n", 0644)
-	require.NoError(t, os.Mkdir(filepath.Join(root, "node_modules"), 0755))
+	writeFile(t, root, ".husky/_/husky.sh", "echo \"husky - DEPRECATED\"\n", 0o644)
+	writeFile(t, root, ".husky/pre-commit", ". \"$(dirname -- \"$0\")/_/husky.sh\"\nfalse\necho after-false\n", 0o644)
+	require.NoError(t, os.Mkdir(filepath.Join(root, "node_modules"), 0o755))
 	plan := husky.Resolve(root, "pre-commit", nil, []string{"HOME=" + t.TempDir(), "PATH=/usr/bin:/bin"})
 	require.Equal(t, husky.Run, plan.Action)
 	cmd := exec.Command(plan.Argv[0], plan.Argv[1:]...)
@@ -438,8 +438,8 @@ func TestResolveUnreadableHelperStillRuns(t *testing.T) {
 	}
 	root := t.TempDir()
 	writeFile(t, root, ".husky/_/husky.sh", legacyHelper, 0o000)
-	writeFile(t, root, ".husky/pre-commit", ". \"$(dirname -- \"$0\")/_/husky.sh\"\nexit 0\n", 0644)
-	require.NoError(t, os.Mkdir(filepath.Join(root, "node_modules"), 0755))
+	writeFile(t, root, ".husky/pre-commit", ". \"$(dirname -- \"$0\")/_/husky.sh\"\nexit 0\n", 0o644)
+	require.NoError(t, os.Mkdir(filepath.Join(root, "node_modules"), 0o755))
 	plan := husky.Resolve(root, "pre-commit", nil, []string{"HOME=" + t.TempDir(), "PATH=/usr/bin:/bin"})
 	// A helper that cannot be read must block the commit as before, not turn into a skip.
 	require.Equal(t, husky.Run, plan.Action)
@@ -452,11 +452,11 @@ func TestResolveSymlinkedStubHelperKeepsErrexit(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	stub := filepath.Join(t.TempDir(), "husky.sh")
-	require.NoError(t, os.WriteFile(stub, []byte("echo \"husky - DEPRECATED\"\n"), 0644))
-	require.NoError(t, os.MkdirAll(filepath.Join(root, ".husky", "_"), 0755))
+	require.NoError(t, os.WriteFile(stub, []byte("echo \"husky - DEPRECATED\"\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".husky", "_"), 0o755))
 	require.NoError(t, os.Symlink(stub, filepath.Join(root, ".husky", "_", "husky.sh")))
-	writeFile(t, root, ".husky/pre-commit", ". \"$(dirname -- \"$0\")/_/husky.sh\"\nfalse\necho after-false\n", 0644)
-	require.NoError(t, os.Mkdir(filepath.Join(root, "node_modules"), 0755))
+	writeFile(t, root, ".husky/pre-commit", ". \"$(dirname -- \"$0\")/_/husky.sh\"\nfalse\necho after-false\n", 0o644)
+	require.NoError(t, os.Mkdir(filepath.Join(root, "node_modules"), 0o755))
 	plan := husky.Resolve(root, "pre-commit", nil, []string{"HOME=" + t.TempDir(), "PATH=/usr/bin:/bin"})
 	cmd := exec.Command(plan.Argv[0], plan.Argv[1:]...)
 	cmd.Dir, cmd.Env = root, plan.Env
@@ -468,10 +468,10 @@ func TestResolveSymlinkedStubHelperKeepsErrexit(t *testing.T) {
 func TestResolveDanglingHelperSymlinkStillRuns(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(root, ".husky", "_"), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".husky", "_"), 0o755))
 	require.NoError(t, os.Symlink(filepath.Join(t.TempDir(), "missing.sh"), filepath.Join(root, ".husky", "_", "husky.sh")))
-	writeFile(t, root, ".husky/pre-commit", ". \"$(dirname -- \"$0\")/_/husky.sh\"\nexit 0\n", 0644)
-	require.NoError(t, os.Mkdir(filepath.Join(root, "node_modules"), 0755))
+	writeFile(t, root, ".husky/pre-commit", ". \"$(dirname -- \"$0\")/_/husky.sh\"\nexit 0\n", 0o644)
+	require.NoError(t, os.Mkdir(filepath.Join(root, "node_modules"), 0o755))
 	plan := husky.Resolve(root, "pre-commit", nil, []string{"HOME=" + t.TempDir(), "PATH=/usr/bin:/bin"})
 	// A broken helper must block the commit as before, not turn into a skip.
 	require.Equal(t, husky.Run, plan.Action)
