@@ -163,4 +163,4 @@ Without a terminal (IDEs, GUI apps, agents), each hook runs in its own process g
 
 If the CPU cap cannot be set up, for example without a writable cache directory, the hook runs without it and git-hooks prints a warning.
 
-For `pre-push`, `pre-receive`, `post-receive`, `post-rewrite` and `reference-transaction`, git-hooks saves the input to a temporary file and gives each stage its own copy. If no temporary file can be written, the hook fails. A pre-push hook after gitleaks still reads the full list of refs. Other hooks share stdin as before.
+For `pre-push`, `pre-receive`, `post-receive`, `post-rewrite` and `reference-transaction`, git-hooks gives each stage its own copy of the input when two or more stages run. It saves the input to a temporary file in `$TMPDIR`, `/tmp` or the git directory. If none can be written, the hook fails. A single stage reads git's input directly. A pre-push hook after gitleaks still reads the full list of refs. Other hooks share stdin as before.

@@ -83,9 +83,17 @@ func executeHook(hookName string) error {
 		return fmt.Errorf("finding global hooks: %w", err)
 	}
 
+	repoRoot, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	globalDir := filepath.Join(home, ".git-hooks", hookName+".d")
+	repoDir := filepath.Join(".git-hooks", hookName+".d")
+	plan := husky.Resolve(repoRoot, hookName, args, os.Environ())
+
 	// Nothing runs yet that could handle Ctrl-C, so it cancels the read.
 	readCtx, stopRead := signal.NotifyContext(ctx, os.Interrupt)
-	stdin, err := replayableStdin(readCtx, hookName)
+	stdin, err := replayableStdin(readCtx, hookName, countStages(readCtx, hookName, globalDir, repoDir, plan))
 	// Ctrl-C kills git, which closes stdin; EOF can win the race against the cancel.
 	if err == nil && readCtx.Err() != nil {
 		_ = stdin.Close()
@@ -111,17 +119,13 @@ func executeHook(hookName string) error {
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = in, os.Stdout, os.Stderr
 		return afterStage(cmd.Run())
 	}
-	if err := executeScriptsInDir(filepath.Join(home, ".git-hooks", hookName+".d"), args, global); err != nil {
+	if err := executeScriptsInDir(globalDir, args, global); err != nil {
 		return err
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	repoRoot, err := os.Getwd()
-	if err != nil {
-		return err
-	}
 	opt := procrun.DefaultOptions()
 	opt.Dir = repoRoot
 	opt.Stdout, opt.Stderr = os.Stdout, os.Stderr
@@ -144,12 +148,11 @@ func executeHook(hookName string) error {
 	}
 
 	// 2. Repo scripts.
-	if err := executeScriptsInDir(filepath.Join(".git-hooks", hookName+".d"), args, capped); err != nil {
+	if err := executeScriptsInDir(repoDir, args, capped); err != nil {
 		return err
 	}
 
 	// 3. Husky: exactly one entry point per hook.
-	plan := husky.Resolve(repoRoot, hookName, args, os.Environ())
 	switch plan.Action {
 	case husky.Skip:
 		fmt.Fprintf(os.Stderr, "git-hooks: WARNING: husky %s skipped: %s\n", hookName, plan.Reason)
@@ -164,6 +167,29 @@ func executeHook(hookName string) error {
 }
 
 type runner func(argv []string, env []string) error
+
+// countStages counts the stages that will get the hook input. Replay is only
+// needed for two or more; one stage reads git's stdin directly, with no disk.
+func countStages(ctx context.Context, hookName, globalDir, repoDir string, plan husky.Plan) int {
+	n := 0
+	for _, dir := range []string{globalDir, repoDir} {
+		entries, _ := os.ReadDir(dir)
+		for _, e := range entries {
+			if !e.IsDir() {
+				n++
+			}
+		}
+	}
+	if plan.Action == husky.Run {
+		n++
+	}
+	if path, ok, err := standardHookPath(ctx, hookName); err == nil && ok {
+		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() && info.Mode()&0o111 != 0 {
+			n++
+		}
+	}
+	return n
+}
 
 func executeScriptsInDir(dir string, args []string, run runner) error {
 	files, err := os.ReadDir(dir)
@@ -265,8 +291,8 @@ const maxHookInput = 512 << 20
 // needs no writer: exec never waits for a child that keeps stdin open, and a
 // child that reads late still gets every byte. If no directory takes the file,
 // the hook fails rather than hand a later stage an empty input.
-func replayableStdin(ctx context.Context, hookName string) (*stdinSource, error) {
-	if !bufferedHooks[hookName] {
+func replayableStdin(ctx context.Context, hookName string, stages int) (*stdinSource, error) {
+	if !bufferedHooks[hookName] || stages < 2 {
 		return &stdinSource{}, nil
 	}
 	info, err := os.Stdin.Stat()
@@ -276,47 +302,71 @@ func replayableStdin(ctx context.Context, hookName string) (*stdinSource, error)
 	if info.Mode()&os.ModeCharDevice != 0 {
 		return &stdinSource{}, nil
 	}
-	f, err := createSpool(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("buffering %s input: %w", hookName, err)
+	type result struct {
+		data []byte
+		err  error
 	}
-	defer f.Close()
-	copied := make(chan error, 1)
+	read := make(chan result, 1)
 	go func() {
-		n, err := io.Copy(f, io.LimitReader(os.Stdin, maxHookInput+1))
-		if err == nil && n > maxHookInput {
-			err = fmt.Errorf("input is larger than %d bytes", maxHookInput)
-		}
-		copied <- err
+		data, err := io.ReadAll(io.LimitReader(os.Stdin, maxHookInput+1))
+		read <- result{data, err}
 	}()
+	var data []byte
 	select {
-	case err = <-copied:
+	case r := <-read:
+		if r.err != nil {
+			return nil, fmt.Errorf("reading %s input: %w", hookName, r.err)
+		}
+		if len(r.data) > maxHookInput {
+			return nil, fmt.Errorf("%s input is larger than %d bytes", hookName, maxHookInput)
+		}
+		data = r.data
 	case <-ctx.Done():
-		err = ctx.Err()
+		return nil, ctx.Err()
 	}
+	path, err := writeSpool(ctx, data)
 	if err != nil {
-		_ = os.Remove(f.Name())
 		return nil, fmt.Errorf("buffering %s input: %w", hookName, err)
 	}
-	return &stdinSource{spool: f.Name()}, nil
+	return &stdinSource{spool: path}, nil
 }
 
-// createSpool tries the temp dir, /tmp, then the git dir, which is writable
-// whenever git can update refs.
-func createSpool(ctx context.Context) (*os.File, error) {
-	dirs := []string{os.TempDir(), "/tmp"}
-	if out, err := exec.CommandContext(ctx, "git", "rev-parse", "--path-format=absolute", "--git-common-dir").Output(); err == nil {
-		dirs = append(dirs, strings.TrimSpace(string(out)))
+// writeSpool tries the temp dir, /tmp, then the git dir, which is writable
+// whenever git can update refs. A failed write (a full disk, a quota) moves
+// on to the next directory too.
+func writeSpool(ctx context.Context, data []byte) (string, error) {
+	dirs := []func() string{
+		os.TempDir,
+		func() string { return "/tmp" },
+		func() string {
+			out, err := exec.CommandContext(ctx, "git", "rev-parse", "--path-format=absolute", "--git-common-dir").Output()
+			if err != nil {
+				return ""
+			}
+			return strings.TrimSpace(string(out))
+		},
 	}
 	var errs []error
 	for _, dir := range dirs {
-		f, err := os.CreateTemp(dir, "git-hooks-stdin-*")
-		if err == nil {
-			return f, nil
+		d := dir()
+		if d == "" {
+			continue
 		}
-		errs = append(errs, err)
+		f, err := os.CreateTemp(d, "git-hooks-stdin-*")
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		_, werr := f.Write(data)
+		cerr := f.Close()
+		if err := errors.Join(werr, cerr); err != nil {
+			_ = os.Remove(f.Name())
+			errs = append(errs, err)
+			continue
+		}
+		return f.Name(), nil
 	}
-	return nil, errors.Join(errs...)
+	return "", errors.Join(errs...)
 }
 
 // Open returns a file that reads the hook input from the start, and a release

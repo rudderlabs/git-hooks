@@ -122,9 +122,12 @@ func stopTree(pid int, done <-chan error) error {
 		}
 		return exited
 	}
-	tree := descendants(pid)
+	var tree []int
 	if !reaped() {
-		_ = syscall.Kill(pid, syscall.SIGTERM)
+		tree = descendants(pid)
+		if !reaped() {
+			_ = syscall.Kill(pid, syscall.SIGTERM)
+		}
 	}
 	signalAll(tree, syscall.SIGTERM)
 	grace := time.NewTimer(5 * time.Second)
@@ -135,9 +138,12 @@ func stopTree(pid int, done <-chan error) error {
 		select {
 		case <-tick.C:
 		case <-grace.C:
+			// Children the stage started during the grace period are below it too.
+			// Scan first: ps can take a while, and the reap check must be the
+			// last thing before the signal. Signalling by pid leaves a window of
+			// microseconds that only a pidfd could close.
+			tree = append(tree, descendants(pid)...)
 			if !reaped() {
-				// Children the stage started during the grace period are below it too.
-				tree = append(tree, descendants(pid)...)
 				_ = syscall.Kill(pid, syscall.SIGKILL)
 			}
 			signalAll(alive(tree), syscall.SIGKILL)
