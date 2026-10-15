@@ -62,6 +62,10 @@ func readConfig(ctx context.Context, repoDir string, args ...string) ([]byte, er
 // gitCommand runs git in repoDir without discovery above it. A broken .git
 // would otherwise make git read, or unset, the parent repository's config.
 func gitCommand(ctx context.Context, repoDir string, args ...string) *exec.Cmd {
+	// GIT_DIR below must not be resolved again relative to -C.
+	if abs, err := filepath.Abs(repoDir); err == nil {
+		repoDir = abs
+	}
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", repoDir}, args...)...)
 	// GIT_DIR and friends override discovery and the ceiling; a scan run from
 	// inside a hook inherits them and would edit the hook's repository.

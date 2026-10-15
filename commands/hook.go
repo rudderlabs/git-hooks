@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -12,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/rudderlabs/git-hooks/internal/husky"
@@ -46,16 +46,34 @@ func executeHook(hookName string) error {
 	// Without a terminal, repo stages run in their own process group, so a
 	// signal must reach them through us. In a terminal, Ctrl-C reaches every
 	// stage directly; cancelling as well would cut short its own SIGINT cleanup.
+	// We still stop after the current stage, because git has died by then.
 	signals := []os.Signal{syscall.SIGTERM, syscall.SIGHUP}
+	var interrupted atomic.Bool
 	if procrun.InForegroundJob() {
 		// Catch SIGINT so it does not kill us before the stage reports its exit.
 		// Ignoring it instead would make every child inherit the ignore.
-		signal.Notify(make(chan os.Signal, 1), os.Interrupt)
+		intr := make(chan os.Signal, 1)
+		signal.Notify(intr, os.Interrupt)
+		defer signal.Stop(intr)
+		go func() {
+			for range intr {
+				interrupted.Store(true)
+			}
+		}()
 	} else {
 		signals = append(signals, os.Interrupt)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), signals...)
 	defer stop()
+	afterStage := func(err error) error {
+		if err != nil {
+			return err
+		}
+		if interrupted.Load() {
+			return errors.New("interrupted")
+		}
+		return ctx.Err()
+	}
 
 	// An empty HOME would make the global path relative and silently skip gitleaks.
 	home, err := os.UserHomeDir()
@@ -63,7 +81,10 @@ func executeHook(hookName string) error {
 		return fmt.Errorf("finding global hooks: %w", err)
 	}
 
-	stdin, err := replayableStdin(ctx, hookName)
+	// Nothing runs yet that could handle Ctrl-C, so it cancels the read.
+	readCtx, stopRead := signal.NotifyContext(ctx, os.Interrupt)
+	stdin, err := replayableStdin(readCtx, hookName)
+	stopRead()
 	if err != nil {
 		return err
 	}
@@ -71,8 +92,13 @@ func executeHook(hookName string) error {
 	// 1. Global scripts (gitleaks) run uncapped and fail closed.
 	global := func(argv []string, _ []string) error {
 		cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-		cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin.Open(), os.Stdout, os.Stderr
-		return cmd.Run()
+		in, release, err := stdin.Open()
+		if err != nil {
+			return err
+		}
+		defer release()
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = in, os.Stdout, os.Stderr
+		return afterStage(cmd.Run())
 	}
 	if err := executeScriptsInDir(filepath.Join(home, ".git-hooks", hookName+".d"), args, global); err != nil {
 		return err
@@ -94,11 +120,13 @@ func executeHook(hookName string) error {
 		if env != nil {
 			o.Env = env
 		}
-		o.Stdin = stdin.Open()
-		if err := procrun.Run(ctx, argv, o); err != nil {
+		in, release, err := stdin.Open()
+		if err != nil {
 			return err
 		}
-		return ctx.Err()
+		defer release()
+		o.Stdin = in
+		return afterStage(procrun.Run(ctx, argv, o))
 	}
 
 	// 2. Repo scripts.
@@ -205,14 +233,14 @@ type stdinSource struct {
 	buffered bool
 }
 
-// bufferedHooks get input from git that ends with EOF. proc-receive talks to
-// git both ways and would deadlock, so it and unknown hooks keep stdin as is.
+// bufferedHooks get a short input from git that ends with EOF. proc-receive
+// talks to git both ways and would deadlock. reference-transaction can carry
+// every ref of a mirror fetch. Those and unknown hooks keep stdin as is.
 var bufferedHooks = map[string]bool{
-	"pre-push":              true,
-	"pre-receive":           true,
-	"post-receive":          true,
-	"post-rewrite":          true,
-	"reference-transaction": true,
+	"pre-push":     true,
+	"pre-receive":  true,
+	"post-receive": true,
+	"post-rewrite": true,
 }
 
 // maxHookInput bounds the buffer. Ref lists are small; a larger input means
@@ -253,11 +281,25 @@ func replayableStdin(ctx context.Context, hookName string) (*stdinSource, error)
 	}
 }
 
-// Open returns a reader positioned at the start of the hook input. An
-// unbuffered source hands out our own stdin, which every stage shares.
-func (s *stdinSource) Open() io.Reader {
+// Open returns a file that reads the hook input from the start, and a release
+// func to call after the stage. Buffered input goes through a pipe we feed
+// ourselves: a child the stage leaves behind may hold the read end without
+// reading, and exec must not wait for that.
+func (s *stdinSource) Open() (*os.File, func(), error) {
 	if !s.buffered {
-		return os.Stdin
+		return os.Stdin, func() {}, nil
 	}
-	return bytes.NewReader(s.data)
+	r, w, err := os.Pipe()
+	if err != nil {
+		return nil, nil, fmt.Errorf("replaying hook input: %w", err)
+	}
+	go func() {
+		_, _ = w.Write(s.data)
+		_ = w.Close()
+	}()
+	return r, func() {
+		_ = r.Close()
+		// Unblocks the writer when the stage never read its input.
+		_ = w.Close()
+	}, nil
 }

@@ -447,3 +447,20 @@ func TestResolveUnreadableHelperStillRuns(t *testing.T) {
 	cmd.Dir, cmd.Env = root, plan.Env
 	require.Error(t, cmd.Run())
 }
+
+func TestResolveSymlinkedStubHelperKeepsErrexit(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	stub := filepath.Join(t.TempDir(), "husky.sh")
+	require.NoError(t, os.WriteFile(stub, []byte("echo \"husky - DEPRECATED\"\n"), 0644))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".husky", "_"), 0755))
+	require.NoError(t, os.Symlink(stub, filepath.Join(root, ".husky", "_", "husky.sh")))
+	writeFile(t, root, ".husky/pre-commit", ". \"$(dirname -- \"$0\")/_/husky.sh\"\nfalse\necho after-false\n", 0644)
+	require.NoError(t, os.Mkdir(filepath.Join(root, "node_modules"), 0755))
+	plan := husky.Resolve(root, "pre-commit", nil, []string{"HOME=" + t.TempDir(), "PATH=/usr/bin:/bin"})
+	cmd := exec.Command(plan.Argv[0], plan.Argv[1:]...)
+	cmd.Dir, cmd.Env = root, plan.Env
+	output, err := cmd.CombinedOutput()
+	require.Error(t, err, "%s", output)
+	require.NotContains(t, string(output), "after-false")
+}

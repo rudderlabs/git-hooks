@@ -65,7 +65,7 @@ func Resolve(repoRoot, hookName string, args []string, environ []string) Plan {
 	legacy := legacySource.Match(content)
 	if legacy {
 		helperPath := filepath.Join(repoRoot, ".husky", "_", "husky.sh")
-		info, err := os.Lstat(helperPath)
+		info, err := os.Stat(helperPath)
 		if errors.Is(err, fs.ErrNotExist) {
 			return Plan{Action: Skip, Reason: "Missing .husky/_/husky.sh; run npm install or migrate to husky v9"}
 		}

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -173,7 +174,7 @@ func TestHookKeepsStdinStreamingForProcReceive(t *testing.T) {
 
 func TestHookReplaysStdinWithoutTempDir(t *testing.T) {
 	t.Parallel()
-	for _, hook := range []string{"pre-push", "reference-transaction"} {
+	for _, hook := range []string{"pre-push", "post-rewrite"} {
 		t.Run(hook, func(t *testing.T) {
 			t.Parallel()
 			f := newFixture(t)
@@ -193,4 +194,29 @@ func TestHookReplaysStdinWithoutTempDir(t *testing.T) {
 			require.Equal(t, input, string(got), "a later validator must see the same input")
 		})
 	}
+}
+
+func TestHookDoesNotWaitForChildHoldingStdin(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	pidFile := filepath.Join(f.repo, "child.pid")
+	// The child inherits stdin, never reads it, and outlives the hook.
+	f.write(filepath.Join(f.home, ".git-hooks", "pre-push.d", "leaves-child"), "#!/bin/sh\nsleep 60 <&0 >/dev/null 2>&1 &\necho $! > "+pidFile+"\nexit 0\n")
+	input := strings.Repeat("0000000000000000000000000000000000000000 1111111111111111111111111111111111111111 refs/heads/main\n", 4000)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := f.hook(ctx, "pre-push", f.env(), "origin", "url")
+	cmd.Stdin = strings.NewReader(input)
+	start := time.Now()
+	out, err := cmd.CombinedOutput()
+	t.Cleanup(func() {
+		if b, err := os.ReadFile(pidFile); err == nil {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	})
+	require.NoError(t, err, string(out))
+	require.Less(t, time.Since(start), 20*time.Second, "the hook must not wait for the child that holds stdin")
 }

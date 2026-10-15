@@ -126,6 +126,10 @@ func stopTree(pid int, done <-chan error) error {
 			if !exited {
 				tree = append(tree, descendants(pid)...)
 			}
+			// A reaped stage pid may already belong to another process.
+			if exited {
+				tree = tree[1:]
+			}
 			signalAll(alive(tree), syscall.SIGKILL)
 			if !exited {
 				waitErr = <-done
