@@ -2,6 +2,7 @@
 package husky
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -61,9 +62,13 @@ func Resolve(repoRoot, hookName string, args []string, environ []string) Plan {
 	}
 	legacy := legacySource.Match(content)
 	if legacy {
-		if _, err := os.Stat(filepath.Join(repoRoot, ".husky", "_", "husky.sh")); err != nil {
+		helper, err := os.ReadFile(filepath.Join(repoRoot, ".husky", "_", "husky.sh"))
+		if err != nil {
 			return Plan{Action: Skip, Reason: "Missing .husky/_/husky.sh; run npm install or migrate to husky v9"}
 		}
+		// husky v9 leaves a deprecation stub here that never re-runs the hook with
+		// sh -e; only the real v7/v8 helper does.
+		legacy = bytes.Contains(helper, []byte("husky_skip_init"))
 	}
 	stub := filepath.Join(repoRoot, ".husky", "_", hookName)
 	if regularFile(filepath.Join(repoRoot, ".husky", "_", "h")) && regularFile(stub) {
@@ -92,7 +97,7 @@ func Resolve(repoRoot, hookName string, args []string, environ []string) Plan {
 		// The helper loads ~/.huskyrc before restarting the hook with sh -e.
 		return Plan{Action: Run, Argv: append([]string{"sh", hook}, args...), Env: env}
 	}
-	init := `i="${XDG_CONFIG_HOME:-$HOME/.config}/husky/init.sh"; [ -f "$i" ] && . "$i"; exec sh -e "$0" "$@"`
+	init := `i="${XDG_CONFIG_HOME:-$HOME/.config}/husky/init.sh"; [ -f "$i" ] && . "$i"; [ "${HUSKY-}" = "0" ] && exit 0; exec sh -e "$0" "$@"`
 	return Plan{Action: Run, Argv: append([]string{"sh", "-c", init, hook}, args...), Env: env}
 }
 

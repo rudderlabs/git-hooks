@@ -52,7 +52,7 @@ func executeHook(hookName string) error {
 		return fmt.Errorf("finding global hooks: %w", err)
 	}
 
-	stdin, err := replayableStdin()
+	stdin, err := replayableStdin(ctx, hookName)
 	if err != nil {
 		return err
 	}
@@ -205,18 +205,40 @@ type stdinSource struct {
 	spool string   // a temp file holding piped input
 }
 
-func replayableStdin() (*stdinSource, error) {
+// spooledHooks get input from git that ends with EOF. Other hooks keep their
+// stdin as is: proc-receive talks to git both ways and would deadlock, and
+// reference-transaction runs on every ref update, too often to spool.
+var spooledHooks = map[string]bool{
+	"pre-push":     true,
+	"pre-receive":  true,
+	"post-receive": true,
+	"post-rewrite": true,
+}
+
+func replayableStdin(ctx context.Context, hookName string) (*stdinSource, error) {
 	info, err := os.Stdin.Stat()
-	if err != nil || info.Mode()&os.ModeCharDevice != 0 {
+	if !spooledHooks[hookName] || err != nil || info.Mode()&os.ModeCharDevice != 0 {
 		return &stdinSource{file: os.Stdin}, nil
 	}
 	f, err := os.CreateTemp("", "git-hooks-stdin-*")
 	if err != nil {
-		return nil, fmt.Errorf("buffering hook input: %w", err)
+		// Only later stages miss the input; blocking every push is worse.
+		fmt.Fprintf(os.Stderr, "git-hooks: WARNING: cannot buffer %s input, only the first stage sees it: %v\n", hookName, err)
+		return &stdinSource{file: os.Stdin}, nil
 	}
 	defer f.Close()
-	if _, err := io.Copy(f, os.Stdin); err != nil {
-		os.Remove(f.Name())
+	copied := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(f, os.Stdin)
+		copied <- err
+	}()
+	select {
+	case err = <-copied:
+	case <-ctx.Done():
+		err = ctx.Err()
+	}
+	if err != nil {
+		_ = os.Remove(f.Name())
 		return nil, fmt.Errorf("buffering hook input: %w", err)
 	}
 	return &stdinSource{spool: f.Name()}, nil

@@ -157,7 +157,9 @@ Steps 2 to 4 run with limits, so a heavy hook (jest, tsc) cannot freeze the mach
 - `GIT_HOOKS_CPUS` (default `2`): Node sees this many CPUs, so jest and vitest start fewer workers. `0` turns the cap off. An explicit `--maxWorkers` still wins.
 - `GIT_HOOKS_NICE` (default `10`): runs the hook at this nice level. `0` turns it off.
 
-Each hook runs in its own process group. git-hooks passes the terminal to it, so a hook can still read `/dev/tty`. Ctrl-C stops the hook. Ctrl-Z stops the whole git command, and `fg` resumes it. When a hook fails, times out or is interrupted, git-hooks also stops its background jobs. After a successful hook, background jobs keep running.
+When git runs in a terminal, the hook runs in git's job, as before. Ctrl-C, Ctrl-Z, `fg`, `bg` and `kill %1` work as usual, and a hook can read `/dev/tty`. On timeout, git-hooks stops the hook and every process it started. The timeout also counts time while the job is stopped with Ctrl-Z.
+
+Without a terminal (IDEs, GUI apps, agents), each hook runs in its own process group. When a hook fails, times out or is canceled, git-hooks stops the whole group. After a successful hook, background jobs keep running.
 
 If the CPU cap cannot be set up, for example without a writable cache directory, the hook runs without it and git-hooks prints a warning.
 

@@ -259,7 +259,7 @@ const legacyHelper = `if [ -z "$husky_skip_init" ]; then
 fi
 `
 
-const v9Init = `i="${XDG_CONFIG_HOME:-$HOME/.config}/husky/init.sh"; [ -f "$i" ] && . "$i"; exec sh -e "$0" "$@"`
+const v9Init = `i="${XDG_CONFIG_HOME:-$HOME/.config}/husky/init.sh"; [ -f "$i" ] && . "$i"; [ "${HUSKY-}" = "0" ] && exit 0; exec sh -e "$0" "$@"`
 
 // v9Helper is Husky 9.1.7's runtime so the test exercises its real dispatch behavior.
 const v9Helper = `#!/usr/bin/env sh
@@ -396,4 +396,37 @@ func TestResolveLastHuskyEntry(t *testing.T) {
 			require.Equal(t, tc.value, string(output))
 		})
 	}
+}
+
+func TestResolveV9FallbackInitDisablesHusky(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	home := t.TempDir()
+	// husky v9 checks HUSKY after sourcing init.sh, so init.sh can turn hooks off.
+	writeFile(t, home, ".config/husky/init.sh", "export HUSKY=0\n", 0644)
+	writeFile(t, root, ".husky/pre-commit", "echo HOOK-RAN\nexit 7\n", 0644)
+	require.NoError(t, os.Mkdir(filepath.Join(root, "node_modules"), 0755))
+	plan := husky.Resolve(root, "pre-commit", nil, []string{"HOME=" + home, "PATH=/usr/bin:/bin"})
+	require.Equal(t, husky.Run, plan.Action)
+	cmd := exec.Command(plan.Argv[0], plan.Argv[1:]...)
+	cmd.Dir, cmd.Env = root, plan.Env
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, "%s", output)
+	require.NotContains(t, string(output), "HOOK-RAN")
+}
+
+func TestResolveV9DeprecationStubKeepsErrexit(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	// husky v9 writes this stub to .husky/_/husky.sh; it does not re-run the hook with sh -e.
+	writeFile(t, root, ".husky/_/husky.sh", "echo \"husky - DEPRECATED\"\n", 0644)
+	writeFile(t, root, ".husky/pre-commit", ". \"$(dirname -- \"$0\")/_/husky.sh\"\nfalse\necho after-false\n", 0644)
+	require.NoError(t, os.Mkdir(filepath.Join(root, "node_modules"), 0755))
+	plan := husky.Resolve(root, "pre-commit", nil, []string{"HOME=" + t.TempDir(), "PATH=/usr/bin:/bin"})
+	require.Equal(t, husky.Run, plan.Action)
+	cmd := exec.Command(plan.Argv[0], plan.Argv[1:]...)
+	cmd.Dir, cmd.Env = root, plan.Env
+	output, err := cmd.CombinedOutput()
+	require.Error(t, err, "%s", output)
+	require.NotContains(t, string(output), "after-false")
 }

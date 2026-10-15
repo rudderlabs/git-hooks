@@ -607,3 +607,24 @@ func TestBrokenNestedRepoNeverTouchesParent(t *testing.T) {
 	require.True(t, exists)
 	require.Equal(t, ".husky", value)
 }
+
+func TestInheritedGitDirNeverRedirectsTheScan(t *testing.T) {
+	parent := t.TempDir()
+	setupGitRepo(t, parent)
+	setGitConfig(t, parent, "core.hooksPath", ".husky")
+	child := filepath.Join(t.TempDir(), "child")
+	require.NoError(t, os.MkdirAll(filepath.Join(child, ".git"), 0o755))
+	// A scan started from inside a git hook inherits the hook's GIT_DIR.
+	t.Setenv("GIT_DIR", filepath.Join(parent, ".git"))
+
+	repos, err := cleangit.Scan(context.Background(), child, 1)
+	require.NoError(t, err)
+	require.Len(t, repos, 1)
+	require.Error(t, repos[0].Err)
+
+	cleangit.Clean(context.Background(), repos)
+	require.NoError(t, os.Unsetenv("GIT_DIR"))
+	value, exists := getGitConfig(t, parent, "core.hooksPath")
+	require.True(t, exists)
+	require.Equal(t, ".husky", value)
+}

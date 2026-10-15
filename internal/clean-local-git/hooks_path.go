@@ -63,8 +63,23 @@ func readConfig(ctx context.Context, repoDir string, args ...string) ([]byte, er
 // would otherwise make git read, or unset, the parent repository's config.
 func gitCommand(ctx context.Context, repoDir string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", repoDir}, args...)...)
-	if abs, err := filepath.Abs(repoDir); err == nil {
-		cmd.Env = append(os.Environ(), "GIT_CEILING_DIRECTORIES="+filepath.Dir(abs))
+	// GIT_DIR and friends override discovery and the ceiling; a scan run from
+	// inside a hook inherits them and would edit the hook's repository.
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		switch name {
+		case "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_CONFIG", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM":
+			continue
+		}
+		env = append(env, entry)
 	}
+	// Git discovers from the real path, so the ceiling must use it too.
+	if real, err := filepath.EvalSymlinks(repoDir); err == nil {
+		if abs, err := filepath.Abs(real); err == nil {
+			env = append(env, "GIT_CEILING_DIRECTORIES="+filepath.Dir(abs))
+		}
+	}
+	cmd.Env = env
 	return cmd
 }

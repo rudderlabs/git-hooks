@@ -141,3 +141,49 @@ func TestHookStandardHookLinkedToWrapperDoesNotRecurse(t *testing.T) {
 	require.Equal(t, 2, strings.Count(string(got), "x"), "outer run plus one nested run, then stop")
 	require.Contains(t, string(out), "calls git-hooks again and was skipped")
 }
+
+func TestHookKeepsStdinStreamingForProcReceive(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.write(filepath.Join(f.repo, ".git", "hooks", "proc-receive"), "#!/bin/sh\nread -r line\necho \"got:$line\" > \"$PWD/proc.out\"\n")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := f.hook(ctx, "proc-receive", f.env())
+	in, err := cmd.StdinPipe()
+	require.NoError(t, err)
+	require.NoError(t, cmd.Start())
+	// git keeps stdin open and waits for the hook's answer; never close it here.
+	_, err = in.Write([]byte("version=1\n"))
+	require.NoError(t, err)
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(10 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("proc-receive deadlocked waiting for stdin EOF")
+	}
+	got, err := os.ReadFile(filepath.Join(f.repo, "proc.out"))
+	require.NoError(t, err)
+	require.Equal(t, "got:version=1\n", string(got))
+	_ = in.Close()
+}
+
+func TestHookRunsWhenStdinCannotBeBuffered(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.write(filepath.Join(f.repo, ".git", "hooks", "pre-push"), "#!/bin/sh\ncat > \"$PWD/standard.in\"\n")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := f.hook(ctx, "pre-push", append(f.env(), "TMPDIR=/nonexistent-git-hooks-tmp"), "origin", "url")
+	cmd.Stdin = strings.NewReader("refs/heads/main 1 refs/heads/main 2\n")
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	require.Contains(t, string(out), "cannot buffer pre-push input")
+	got, err := os.ReadFile(filepath.Join(f.repo, "standard.in"))
+	require.NoError(t, err)
+	require.Equal(t, "refs/heads/main 1 refs/heads/main 2\n", string(got))
+}
