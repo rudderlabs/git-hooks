@@ -193,7 +193,7 @@ func TestStopTreeCatchesForksOfAnOrphanedWorker(t *testing.T) {
 			// A pid that is gone makes ps exit 1 with no output; anything else must work.
 			out, err := exec.Command("/bin/ps", "-o", "command=", "-p", field).Output()
 			var exitErr *exec.ExitError
-			gone := errors.As(err, &exitErr) && exitErr.ExitCode() == 1 && len(out) == 0
+			gone := errors.As(err, &exitErr) && exitErr.ExitCode() == 1 && len(out) == 0 && len(exitErr.Stderr) == 0
 			if err != nil && !gone {
 				t.Fatalf("ps failed: %v", err)
 			}
@@ -235,7 +235,7 @@ func TestStopTreeNeverLeavesAProcessStopped(t *testing.T) {
 
 	out, err := exec.Command("/bin/ps", "-o", "state=", "-p", strconv.Itoa(child)).Output()
 	var exitErr *exec.ExitError
-	gone := errors.As(err, &exitErr) && exitErr.ExitCode() == 1 && len(out) == 0
+	gone := errors.As(err, &exitErr) && exitErr.ExitCode() == 1 && len(out) == 0 && len(exitErr.Stderr) == 0
 	if err != nil && !gone {
 		t.Fatalf("ps failed: %v", err)
 	}

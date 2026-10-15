@@ -244,11 +244,17 @@ func stopTreeWith(pid int, done <-chan error, stage proc, tree []proc) error {
 		}
 		// A frozen pid that fails the check is either ours with a start time
 		// ps now reports differently, or someone else's after a reuse. Resume
-		// it only while it is still stopped, which a reused pid's owner almost
-		// never is, so ours is not left stopped forever and a running stranger
-		// gets no signal at all.
+		// it only while it looks like ours: stopped, or in uninterruptible I/O
+		// with our SIGSTOP still pending, and parented by init or by a process
+		// we track. A reused pid's new owner fails that, so a stranger gets no
+		// signal, and ours is never left stopped forever.
+		parents := map[int]bool{1: true, pid: true}
+		for _, p := range tree {
+			parents[p.pid] = true
+		}
 		for _, p := range stopped {
-			if e, ok := snap[p]; ok && !verified[p] && e.stopped {
+			e, ok := snap[p]
+			if ok && !verified[p] && (e.state == 'T' || e.state == 't' || e.state == 'D') && parents[e.ppid] {
 				_ = syscall.Kill(p, syscall.SIGCONT)
 			}
 		}
@@ -281,9 +287,11 @@ type proc struct {
 }
 
 type psEntry struct {
-	ppid    int
-	start   string
-	stopped bool
+	ppid  int
+	start string
+	// state is the first letter of ps stat: T stopped (t traced), D in uninterruptible
+	// I/O (a SIGSTOP sent then is still pending).
+	state byte
 }
 
 // snapshot reads every process with its parent and start time. ps runs by
@@ -334,7 +342,7 @@ func snapshotBy(deadline time.Time) map[int]psEntry {
 		pid, err1 := strconv.Atoi(fields[0])
 		ppid, err2 := strconv.Atoi(fields[1])
 		if err1 == nil && err2 == nil {
-			procs[pid] = psEntry{ppid: ppid, stopped: strings.HasPrefix(fields[2], "T"), start: strings.Join(fields[3:], " ")}
+			procs[pid] = psEntry{ppid: ppid, state: fields[2][0], start: strings.Join(fields[3:], " ")}
 		}
 	}
 	return procs
