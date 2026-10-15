@@ -106,6 +106,24 @@ func scanLocalAction(c *cli.Context) error {
 		return fmt.Errorf("scanning repositories: %w", err)
 	}
 
+	var overrides, unreadable []cleangit.Repository
+	for _, repo := range repos {
+		if repo.Err != nil {
+			unreadable = append(unreadable, repo)
+		} else {
+			overrides = append(overrides, repo)
+		}
+	}
+	if len(unreadable) > 0 {
+		// An unreadable config may hide an override; report it, but do not count it as one.
+		fmt.Fprintf(out, "\n⚠️  Could not read the config of %d %s:\n\n",
+			len(unreadable), pluralize("repository", "repositories", len(unreadable)))
+		for _, repo := range unreadable {
+			fmt.Fprintf(out, "  • %s: %v\n", repo.Path, repo.Err)
+		}
+	}
+	repos = overrides
+
 	if len(repos) == 0 {
 		fmt.Fprintln(out, "\n✅ No repositories found with local hooksPath overrides.")
 		return nil
@@ -116,10 +134,6 @@ func scanLocalAction(c *cli.Context) error {
 		pluralize("repository", "repositories", len(repos)))
 
 	for _, repo := range repos {
-		if repo.Err != nil {
-			fmt.Fprintf(out, "  ⚠️  %s (config unreadable: %v)\n", repo.Path, repo.Err)
-			continue
-		}
 		if verbose {
 			fmt.Fprintf(out, "  📁 %s\n", repo.Path)
 			fmt.Fprintf(out, "     Override: core.hooksPath = %s\n", repo.CustomHooksPath)

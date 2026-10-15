@@ -590,3 +590,20 @@ func TestCleanWorktreeConfig(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, values)
 }
+
+func TestBrokenNestedRepoNeverTouchesParent(t *testing.T) {
+	parent := t.TempDir()
+	setupGitRepo(t, parent)
+	setGitConfig(t, parent, "core.hooksPath", ".husky")
+	require.NoError(t, os.MkdirAll(filepath.Join(parent, "child", ".git"), 0o755))
+
+	repos, err := cleangit.Scan(context.Background(), filepath.Join(parent, "child"), 1)
+	require.NoError(t, err)
+	require.Len(t, repos, 1)
+	require.Error(t, repos[0].Err, "the broken child must not borrow the parent's config")
+
+	cleangit.Clean(context.Background(), repos)
+	value, exists := getGitConfig(t, parent, "core.hooksPath")
+	require.True(t, exists)
+	require.Equal(t, ".husky", value)
+}

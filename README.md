@@ -145,15 +145,20 @@ A failing global hook stops the commit before any repository hook runs. gitleaks
 ### Husky
 
 - husky v9 with `.husky/_/h` installed: git-hooks runs `.husky/_/<hook-name>`, husky's own wrapper.
-- Otherwise: git-hooks runs `sh -e .husky/<hook-name>` with `node_modules/.bin` on `PATH`. The exec bit does not matter.
-- git-hooks skips the husky hook with a warning when `HUSKY=0` is set, when the repository has no `node_modules`, or when a v7/v8 hook sources a missing `.husky/_/husky.sh`. Global hooks still run. CI runs the same checks.
+- husky v7/v8: git-hooks runs `sh .husky/<hook-name>` with `node_modules/.bin` on `PATH`. husky's own helper then loads `~/.huskyrc` and runs the hook with `sh -e`.
+- Otherwise: git-hooks loads `~/.config/husky/init.sh` and runs `sh -e .husky/<hook-name>` with `node_modules/.bin` on `PATH`. The exec bit does not matter.
+- git-hooks skips the husky hook with a warning when `HUSKY=0` is set, when the repository has neither `node_modules` nor a Yarn PnP file (`.pnp.cjs`), or when a v7/v8 hook sources a missing `.husky/_/husky.sh`. Global hooks still run. CI runs the same checks.
 
 ### Resource limits for repository hooks
 
 Steps 2 to 4 run with limits, so a heavy hook (jest, tsc) cannot freeze the machine:
 
-- `GIT_HOOKS_TIMEOUT` (default `10m`): kills the hook and its child processes after this time.
+- `GIT_HOOKS_TIMEOUT` (default `10m`): kills the hook and its child processes after this time. `0` turns the timeout off.
 - `GIT_HOOKS_CPUS` (default `2`): Node sees this many CPUs, so jest and vitest start fewer workers. `0` turns the cap off. An explicit `--maxWorkers` still wins.
 - `GIT_HOOKS_NICE` (default `10`): runs the hook at this nice level. `0` turns it off.
 
-Each hook runs in its own process group. git-hooks passes the terminal to it, so a hook can still read `/dev/tty`. Ctrl-C stops the hook and its background jobs.
+Each hook runs in its own process group. git-hooks passes the terminal to it, so a hook can still read `/dev/tty`. Ctrl-C stops the hook. Ctrl-Z stops the whole git command, and `fg` resumes it. When a hook fails, times out or is interrupted, git-hooks also stops its background jobs. After a successful hook, background jobs keep running.
+
+If the CPU cap cannot be set up, for example without a writable cache directory, the hook runs without it and git-hooks prints a warning.
+
+Every stage gets the same stdin. A pre-push hook after gitleaks still reads the full list of refs.

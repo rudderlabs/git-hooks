@@ -212,7 +212,7 @@ func removeHooksPath(ctx context.Context, repo *Repository) error {
 		scopes = append(scopes, "--worktree")
 	}
 	for _, scope := range scopes {
-		cmd := exec.CommandContext(ctx, "git", "-C", repo.Path, "config", scope, "--unset-all", "core.hooksPath")
+		cmd := gitCommand(ctx, repo.Path, "config", scope, "--unset-all", "core.hooksPath")
 		output, err := cmd.CombinedOutput()
 		if err == nil {
 			continue

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -38,7 +40,7 @@ func configValues(ctx context.Context, repoDir, scope, key string) ([]string, er
 }
 
 func readConfig(ctx context.Context, repoDir string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", repoDir, "config"}, args...)...)
+	cmd := gitCommand(ctx, repoDir, append([]string{"config"}, args...)...)
 	output, err := cmd.Output()
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
@@ -55,4 +57,14 @@ func readConfig(ctx context.Context, repoDir string, args ...string) ([]byte, er
 		return nil, fmt.Errorf("reading git config in %s: %w", repoDir, err)
 	}
 	return output, nil
+}
+
+// gitCommand runs git in repoDir without discovery above it. A broken .git
+// would otherwise make git read, or unset, the parent repository's config.
+func gitCommand(ctx context.Context, repoDir string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", repoDir}, args...)...)
+	if abs, err := filepath.Abs(repoDir); err == nil {
+		cmd.Env = append(os.Environ(), "GIT_CEILING_DIRECTORIES="+filepath.Dir(abs))
+	}
+	return cmd
 }

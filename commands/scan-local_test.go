@@ -130,3 +130,17 @@ func TestScanLocalHelpAfterPath(t *testing.T) {
 	require.Contains(t, output, "--yes")
 	require.NotContains(t, output, "Scanning")
 }
+
+func TestScanLocalReportsUnreadableSeparately(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "broken", ".git"), 0o755))
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+	var out bytes.Buffer
+	app := &cli.App{Commands: []*cli.Command{commands.ScanLocal}, Writer: &out, ErrWriter: &out, Reader: strings.NewReader("")}
+	err := app.Run([]string{"git-hooks", "scan-local", root, "--auto-fix", "--yes"})
+	require.NoError(t, err, out.String())
+	require.Contains(t, out.String(), "Could not read the config of 1 repository")
+	require.Contains(t, out.String(), "No repositories found with local hooksPath overrides")
+}
