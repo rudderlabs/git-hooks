@@ -165,3 +165,32 @@ func TestStopTreeSurvivesOneFailedPsAfterReap(t *testing.T) {
 	require.Error(t, stopTree(cmd.Process.Pid, done))
 	require.Eventually(t, func() bool { return syscall.Kill(child, 0) == syscall.ESRCH }, 10*time.Second, 20*time.Millisecond, "one failed ps must not save the child")
 }
+
+func TestStopTreeCatchesForksOfAnOrphanedWorker(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// The stage dies on SIGTERM; its worker ignores TERM and keeps forking.
+	cmd := exec.Command("/bin/sh", "-c", `/bin/sh -c 'trap "" TERM; while :; do /bin/sh -c "trap \"\" TERM; exec /bin/sleep 1001" & echo $! >> kids; /bin/sleep 0.05; done' & /bin/sleep 300`)
+	cmd.Dir = dir
+	require.NoError(t, cmd.Start())
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	time.Sleep(500 * time.Millisecond)
+	_ = stopTree(cmd.Process.Pid, done)
+
+	b, err := os.ReadFile(filepath.Join(dir, "kids"))
+	require.NoError(t, err)
+	var leaked []int
+	for _, field := range strings.Fields(string(b)) {
+		pid, err := strconv.Atoi(field)
+		require.NoError(t, err)
+		if syscall.Kill(pid, 0) == nil {
+			out, _ := exec.Command("/bin/ps", "-o", "command=", "-p", field).Output()
+			if strings.Contains(string(out), "sleep 1001") {
+				leaked = append(leaked, pid)
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	}
+	require.Empty(t, leaked, "forks of a verified worker must die with it")
+}

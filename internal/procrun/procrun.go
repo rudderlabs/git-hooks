@@ -147,11 +147,20 @@ func stopTreeWith(pid int, done <-chan error, stage proc, tree []proc) error {
 	// also recovers from a ps that failed on an earlier call.
 	learn := func(by time.Time) map[int]psEntry {
 		snap := snapshotBy(by)
-		if snap != nil && !reaped() {
+		if snap == nil {
+			return nil
+		}
+		if !reaped() {
 			if stage.start == "" {
 				stage.start = snap[pid].start
 			}
 			add(stage.descendants(snap))
+		}
+		// A verified descendant is ours, and so are its children, even after
+		// the stage died and it was reparented: a TERM-ignoring worker keeps
+		// forking.
+		for _, p := range live(tree, snap) {
+			add(p.descendants(snap))
 		}
 		return snap
 	}
@@ -198,26 +207,35 @@ func stopTreeWith(pid int, done <-chan error, stage proc, tree []proc) error {
 	if !reaped() {
 		_ = syscall.Kill(pid, syscall.SIGSTOP)
 	}
-	// A stopped process cannot exit, so its pid stays its own until it is
-	// killed: everything stopped here is killed by pid, even if ps fails now.
+	// Freeze in rounds until a scan finds nothing new. A stopped process
+	// cannot fork, so the rounds end, and every parent stays alive while we
+	// look for its children. A stopped process also cannot exit, so its pid
+	// stays its own until we kill it: all of them are killed by pid below,
+	// once, even if ps fails by then.
+	frozen := map[int]bool{}
 	var stopped []int
-	// learn also adds children forked since the last loop scan.
-	if snap := learn(final); snap != nil {
+	for time.Now().Before(final) {
+		snap := learn(final)
+		if snap == nil {
+			break
+		}
+		added := false
 		for _, p := range live(tree, snap) {
-			if p.pid != pid && syscall.Kill(p.pid, syscall.SIGSTOP) == nil {
+			if p.pid != pid && !frozen[p.pid] && syscall.Kill(p.pid, syscall.SIGSTOP) == nil {
+				frozen[p.pid] = true
 				stopped = append(stopped, p.pid)
+				added = true
 			}
 		}
+		if !added {
+			break
+		}
 	}
-	// Kill the frozen ones first, while they are still stopped and so still
-	// themselves; the verified pass below then skips them, so no pid gets a
-	// second, unchecked kill after it may have been reaped and reused.
-	frozen := map[int]bool{}
 	for _, p := range stopped {
-		frozen[p] = true
 		_ = syscall.Kill(p, syscall.SIGKILL)
 	}
-	learn(final)
+	// Anything verified but not frozen gets a checked kill; frozen pids
+	// never get a second, unchecked one.
 	var rest []proc
 	for _, p := range tree {
 		if !frozen[p.pid] {
