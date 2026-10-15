@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -42,8 +43,18 @@ func executeHook(hookName string) error {
 		args = os.Args[3:]
 	}
 
-	// Repo stages run in their own process group, so Ctrl-C must reach them through us.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// Without a terminal, repo stages run in their own process group, so a
+	// signal must reach them through us. In a terminal, Ctrl-C reaches every
+	// stage directly; cancelling as well would cut short its own SIGINT cleanup.
+	signals := []os.Signal{syscall.SIGTERM, syscall.SIGHUP}
+	if procrun.InForegroundJob() {
+		// Catch SIGINT so it does not kill us before the stage reports its exit.
+		// Ignoring it instead would make every child inherit the ignore.
+		signal.Notify(make(chan os.Signal, 1), os.Interrupt)
+	} else {
+		signals = append(signals, os.Interrupt)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), signals...)
 	defer stop()
 
 	// An empty HOME would make the global path relative and silently skip gitleaks.
@@ -56,17 +67,11 @@ func executeHook(hookName string) error {
 	if err != nil {
 		return err
 	}
-	defer stdin.Close()
 
 	// 1. Global scripts (gitleaks) run uncapped and fail closed.
 	global := func(argv []string, _ []string) error {
-		in, release, err := stdin.Open()
-		if err != nil {
-			return err
-		}
-		defer release()
 		cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-		cmd.Stdin, cmd.Stdout, cmd.Stderr = in, os.Stdout, os.Stderr
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin.Open(), os.Stdout, os.Stderr
 		return cmd.Run()
 	}
 	if err := executeScriptsInDir(filepath.Join(home, ".git-hooks", hookName+".d"), args, global); err != nil {
@@ -89,12 +94,7 @@ func executeHook(hookName string) error {
 		if env != nil {
 			o.Env = env
 		}
-		in, release, err := stdin.Open()
-		if err != nil {
-			return err
-		}
-		defer release()
-		o.Stdin = in
+		o.Stdin = stdin.Open()
 		if err := procrun.Run(ctx, argv, o); err != nil {
 			return err
 		}
@@ -199,67 +199,65 @@ func standardHookPath(ctx context.Context, hookName string) (string, bool, error
 
 // stdinSource gives every stage its own reader over the same hook input.
 // pre-push and post-rewrite pass data on stdin, and the first stage would
-// otherwise consume it all.
+// otherwise consume it all, so a later validator would see no refs.
 type stdinSource struct {
-	file  *os.File // the terminal or /dev/null, shared as is
-	spool string   // a temp file holding piped input
+	data     []byte
+	buffered bool
 }
 
-// spooledHooks get input from git that ends with EOF. Other hooks keep their
-// stdin as is: proc-receive talks to git both ways and would deadlock, and
-// reference-transaction runs on every ref update, too often to spool.
-var spooledHooks = map[string]bool{
-	"pre-push":     true,
-	"pre-receive":  true,
-	"post-receive": true,
-	"post-rewrite": true,
+// bufferedHooks get input from git that ends with EOF. proc-receive talks to
+// git both ways and would deadlock, so it and unknown hooks keep stdin as is.
+var bufferedHooks = map[string]bool{
+	"pre-push":              true,
+	"pre-receive":           true,
+	"post-receive":          true,
+	"post-rewrite":          true,
+	"reference-transaction": true,
 }
+
+// maxHookInput bounds the buffer. Ref lists are small; a larger input means
+// something other than git is feeding the hook.
+const maxHookInput = 64 << 20
 
 func replayableStdin(ctx context.Context, hookName string) (*stdinSource, error) {
+	if !bufferedHooks[hookName] {
+		return &stdinSource{}, nil
+	}
 	info, err := os.Stdin.Stat()
-	if !spooledHooks[hookName] || err != nil || info.Mode()&os.ModeCharDevice != 0 {
-		return &stdinSource{file: os.Stdin}, nil
-	}
-	f, err := os.CreateTemp("", "git-hooks-stdin-*")
 	if err != nil {
-		// Only later stages miss the input; blocking every push is worse.
-		fmt.Fprintf(os.Stderr, "git-hooks: WARNING: cannot buffer %s input, only the first stage sees it: %v\n", hookName, err)
-		return &stdinSource{file: os.Stdin}, nil
+		return nil, fmt.Errorf("checking %s input: %w", hookName, err)
 	}
-	defer f.Close()
-	copied := make(chan error, 1)
+	if info.Mode()&os.ModeCharDevice != 0 {
+		return &stdinSource{}, nil
+	}
+	type result struct {
+		data []byte
+		err  error
+	}
+	read := make(chan result, 1)
 	go func() {
-		_, err := io.Copy(f, os.Stdin)
-		copied <- err
+		data, err := io.ReadAll(io.LimitReader(os.Stdin, maxHookInput+1))
+		read <- result{data, err}
 	}()
 	select {
-	case err = <-copied:
+	case r := <-read:
+		if r.err != nil {
+			return nil, fmt.Errorf("reading %s input: %w", hookName, r.err)
+		}
+		if len(r.data) > maxHookInput {
+			return nil, fmt.Errorf("%s input is larger than %d bytes", hookName, maxHookInput)
+		}
+		return &stdinSource{data: r.data, buffered: true}, nil
 	case <-ctx.Done():
-		err = ctx.Err()
+		return nil, ctx.Err()
 	}
-	if err != nil {
-		_ = os.Remove(f.Name())
-		return nil, fmt.Errorf("buffering hook input: %w", err)
-	}
-	return &stdinSource{spool: f.Name()}, nil
 }
 
-// Open returns a reader positioned at the start of the hook input and a
-// release func. The shared terminal is never closed: it is our own stdin.
-func (s *stdinSource) Open() (*os.File, func(), error) {
-	if s.spool == "" {
-		return s.file, func() {}, nil
+// Open returns a reader positioned at the start of the hook input. An
+// unbuffered source hands out our own stdin, which every stage shares.
+func (s *stdinSource) Open() io.Reader {
+	if !s.buffered {
+		return os.Stdin
 	}
-	f, err := os.Open(s.spool)
-	if err != nil {
-		return nil, nil, err
-	}
-	return f, func() { _ = f.Close() }, nil
-}
-
-func (s *stdinSource) Close() error {
-	if s.spool == "" {
-		return nil
-	}
-	return os.Remove(s.spool)
+	return bytes.NewReader(s.data)
 }

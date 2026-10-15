@@ -69,13 +69,22 @@ func gitCommand(ctx context.Context, repoDir string, args ...string) *exec.Cmd {
 	for _, entry := range os.Environ() {
 		name, _, _ := strings.Cut(entry, "=")
 		switch name {
-		case "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_CONFIG", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM":
+		case "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+			"GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS",
+			"GIT_CONFIG_COUNT", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM":
+			continue
+		}
+		// `git -c` in the calling hook arrives as GIT_CONFIG_KEY_n/VALUE_n and would read as local config.
+		if strings.HasPrefix(name, "GIT_CONFIG_KEY_") || strings.HasPrefix(name, "GIT_CONFIG_VALUE_") {
 			continue
 		}
 		env = append(env, entry)
 	}
-	// Git discovers from the real path, so the ceiling must use it too.
-	if real, err := filepath.EvalSymlinks(repoDir); err == nil {
+	// A .git directory is named outright, so git never discovers upward.
+	// GIT_CEILING_DIRECTORIES cannot hold a path with ':' in it.
+	if info, err := os.Stat(filepath.Join(repoDir, ".git")); err == nil && info.IsDir() {
+		env = append(env, "GIT_DIR="+filepath.Join(repoDir, ".git"))
+	} else if real, err := filepath.EvalSymlinks(repoDir); err == nil {
 		if abs, err := filepath.Abs(real); err == nil {
 			env = append(env, "GIT_CEILING_DIRECTORIES="+filepath.Dir(abs))
 		}

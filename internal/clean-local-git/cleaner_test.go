@@ -628,3 +628,17 @@ func TestInheritedGitDirNeverRedirectsTheScan(t *testing.T) {
 	require.True(t, exists)
 	require.Equal(t, ".husky", value)
 }
+
+func TestInheritedGitConfigParametersAreIgnored(t *testing.T) {
+	dir := t.TempDir()
+	setupGitRepo(t, dir)
+	// A scan launched from a hook that `git -c core.hooksPath=x commit` started.
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "core.hooksPath")
+	t.Setenv("GIT_CONFIG_VALUE_0", ".husky")
+	t.Setenv("GIT_CONFIG_PARAMETERS", "'core.hookspath'='.husky'")
+
+	values, err := cleangit.LocalHooksPath(context.Background(), dir)
+	require.NoError(t, err)
+	require.Empty(t, values)
+}

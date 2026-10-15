@@ -37,3 +37,6 @@ func Run(ctx context.Context, argv []string, opt Options) error {
 	}
 	return err
 }
+
+// InForegroundJob reports false: there is no job control on this platform.
+func InForegroundJob() bool { return false }

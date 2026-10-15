@@ -171,19 +171,26 @@ func TestHookKeepsStdinStreamingForProcReceive(t *testing.T) {
 	_ = in.Close()
 }
 
-func TestHookRunsWhenStdinCannotBeBuffered(t *testing.T) {
+func TestHookReplaysStdinWithoutTempDir(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t)
-	f.write(filepath.Join(f.repo, ".git", "hooks", "pre-push"), "#!/bin/sh\ncat > \"$PWD/standard.in\"\n")
+	for _, hook := range []string{"pre-push", "reference-transaction"} {
+		t.Run(hook, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			// The global stage reads everything first, as a gitleaks wrapper may.
+			f.write(filepath.Join(f.home, ".git-hooks", hook+".d", "global"), "#!/bin/sh\ncat > /dev/null\n")
+			f.write(filepath.Join(f.repo, ".git", "hooks", hook), "#!/bin/sh\ncat > \"$PWD/standard.in\"\n")
+			input := "0000 1111 refs/heads/main\n"
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	cmd := f.hook(ctx, "pre-push", append(f.env(), "TMPDIR=/nonexistent-git-hooks-tmp"), "origin", "url")
-	cmd.Stdin = strings.NewReader("refs/heads/main 1 refs/heads/main 2\n")
-	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, string(out))
-	require.Contains(t, string(out), "cannot buffer pre-push input")
-	got, err := os.ReadFile(filepath.Join(f.repo, "standard.in"))
-	require.NoError(t, err)
-	require.Equal(t, "refs/heads/main 1 refs/heads/main 2\n", string(got))
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			cmd := f.hook(ctx, hook, append(f.env(), "TMPDIR=/nonexistent-git-hooks-tmp"), "prepared")
+			cmd.Stdin = strings.NewReader(input)
+			out, err := cmd.CombinedOutput()
+			require.NoError(t, err, string(out))
+			got, err := os.ReadFile(filepath.Join(f.repo, "standard.in"))
+			require.NoError(t, err)
+			require.Equal(t, input, string(got), "a later validator must see the same input")
+		})
+	}
 }

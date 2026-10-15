@@ -3,6 +3,8 @@ package husky
 
 import (
 	"bytes"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -62,13 +64,19 @@ func Resolve(repoRoot, hookName string, args []string, environ []string) Plan {
 	}
 	legacy := legacySource.Match(content)
 	if legacy {
-		helper, err := os.ReadFile(filepath.Join(repoRoot, ".husky", "_", "husky.sh"))
-		if err != nil {
+		helperPath := filepath.Join(repoRoot, ".husky", "_", "husky.sh")
+		info, err := os.Lstat(helperPath)
+		if errors.Is(err, fs.ErrNotExist) {
 			return Plan{Action: Skip, Reason: "Missing .husky/_/husky.sh; run npm install or migrate to husky v9"}
 		}
 		// husky v9 leaves a deprecation stub here that never re-runs the hook with
-		// sh -e; only the real v7/v8 helper does.
-		legacy = bytes.Contains(helper, []byte("husky_skip_init"))
+		// sh -e; only the real v7/v8 helper does. Anything odd (unreadable, not a
+		// small regular file) keeps the legacy path, so the hook runs and can fail.
+		if err == nil && info.Mode().IsRegular() && info.Size() < 1<<20 {
+			if helper, err := os.ReadFile(helperPath); err == nil {
+				legacy = bytes.Contains(helper, []byte("husky_skip_init"))
+			}
+		}
 	}
 	stub := filepath.Join(repoRoot, ".husky", "_", hookName)
 	if regularFile(filepath.Join(repoRoot, ".husky", "_", "h")) && regularFile(stub) {

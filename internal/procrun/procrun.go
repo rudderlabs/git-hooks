@@ -12,7 +12,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	"unsafe"
 )
 
 // Run executes argv with the supplied resource limits.
@@ -41,7 +40,7 @@ func Run(ctx context.Context, argv []string, opt Options) error {
 	cmd.Env, cmd.Dir = opt.Env, opt.Dir
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = opt.Stdin, opt.Stdout, opt.Stderr
 	applyCPUCap(cmd, opt.CPUs)
-	interactive := inForegroundJob()
+	interactive := InForegroundJob()
 	if !interactive {
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	}
@@ -73,24 +72,16 @@ func Run(ctx context.Context, argv []string, opt Options) error {
 	return fmt.Errorf("%s: %w", message, errors.Join(ctx.Err(), stopErr))
 }
 
-// inForegroundJob reports whether we own the controlling terminal's foreground.
-func inForegroundJob() bool {
+// InForegroundJob reports whether git runs with a controlling terminal. Then
+// the stage stays in git's job, so the shell handles Ctrl-C, Ctrl-Z, fg, bg
+// and kill %1, even for `git commit &` that is brought back with fg.
+func InForegroundJob() bool {
 	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
 		return false
 	}
-	defer tty.Close()
-	group, err := ttyGroup(tty)
-	return err == nil && group == syscall.Getpgrp()
-}
-
-func ttyGroup(tty *os.File) (int, error) {
-	var group int32
-	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, tty.Fd(), syscall.TIOCGPGRP, uintptr(unsafe.Pointer(&group)))
-	if errno != 0 {
-		return 0, errno
-	}
-	return int(group), nil
+	_ = tty.Close()
+	return true
 }
 
 func stopGroup(pid int, done <-chan error) error {
@@ -117,19 +108,44 @@ func stopGroup(pid int, done <-chan error) error {
 // stage and its descendants by pid, because signalling the group would kill
 // git and the shell's job with it.
 func stopTree(pid int, done <-chan error) error {
-	tree := descendants(pid)
-	signalAll(append([]int{pid}, tree...), syscall.SIGTERM)
-	timer := time.NewTimer(5 * time.Second)
-	defer timer.Stop()
-	select {
-	case err := <-done:
-		// Children that outlived the stage were captured before it exited.
-		signalAll(tree, syscall.SIGKILL)
-		return err
-	case <-timer.C:
+	tree := append([]int{pid}, descendants(pid)...)
+	signalAll(tree, syscall.SIGTERM)
+	grace := time.NewTimer(5 * time.Second)
+	defer grace.Stop()
+	var waitErr error
+	exited := false
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case waitErr = <-done:
+			exited = true
+		case <-tick.C:
+		case <-grace.C:
+			// Children the stage started during the grace period are below it too.
+			if !exited {
+				tree = append(tree, descendants(pid)...)
+			}
+			signalAll(alive(tree), syscall.SIGKILL)
+			if !exited {
+				waitErr = <-done
+			}
+			return waitErr
+		}
+		if exited && len(alive(tree[1:])) == 0 {
+			return waitErr
+		}
 	}
-	signalAll(append([]int{pid}, append(tree, descendants(pid)...)...), syscall.SIGKILL)
-	return <-done
+}
+
+func alive(pids []int) []int {
+	var out []int
+	for _, p := range pids {
+		if syscall.Kill(p, 0) == nil {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func signalAll(pids []int, sig syscall.Signal) {
@@ -140,8 +156,11 @@ func signalAll(pids []int, sig syscall.Signal) {
 
 // descendants lists every process below pid, using ps because neither
 // darwin nor linux offers a portable child list in the standard library.
+// The absolute path and the deadline keep a broken PATH from hanging a kill.
 func descendants(pid int) []int {
-	out, err := exec.Command("ps", "-A", "-o", "pid=,ppid=").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "/bin/ps", "-A", "-o", "pid=,ppid=").Output()
 	if err != nil {
 		return nil
 	}
