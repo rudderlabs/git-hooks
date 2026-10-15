@@ -65,10 +65,11 @@ func Resolve(repoRoot, hookName string, args []string, environ []string) Plan {
 	legacy := legacySource.Match(content)
 	if legacy {
 		helperPath := filepath.Join(repoRoot, ".husky", "_", "husky.sh")
-		info, err := os.Stat(helperPath)
-		if errors.Is(err, fs.ErrNotExist) {
+		// Lstat: a dangling symlink is present but broken, so the hook runs and fails.
+		if _, err := os.Lstat(helperPath); errors.Is(err, fs.ErrNotExist) {
 			return Plan{Action: Skip, Reason: "Missing .husky/_/husky.sh; run npm install or migrate to husky v9"}
 		}
+		info, err := os.Stat(helperPath)
 		// husky v9 leaves a deprecation stub here that never re-runs the hook with
 		// sh -e; only the real v7/v8 helper does. Anything odd (unreadable, not a
 		// small regular file) keeps the legacy path, so the hook runs and can fail.

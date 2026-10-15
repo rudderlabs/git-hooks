@@ -108,27 +108,37 @@ func stopGroup(pid int, done <-chan error) error {
 // stage and its descendants by pid, because signalling the group would kill
 // git and the shell's job with it.
 func stopTree(pid int, done <-chan error) error {
-	tree := append([]int{pid}, descendants(pid)...)
+	var waitErr error
+	exited := false
+	// reaped reports whether cmd.Wait has returned. After that the stage pid
+	// may belong to another process, so it is checked right before each signal.
+	reaped := func() bool {
+		if !exited {
+			select {
+			case waitErr = <-done:
+				exited = true
+			default:
+			}
+		}
+		return exited
+	}
+	tree := descendants(pid)
+	if !reaped() {
+		_ = syscall.Kill(pid, syscall.SIGTERM)
+	}
 	signalAll(tree, syscall.SIGTERM)
 	grace := time.NewTimer(5 * time.Second)
 	defer grace.Stop()
-	var waitErr error
-	exited := false
 	tick := time.NewTicker(50 * time.Millisecond)
 	defer tick.Stop()
 	for {
 		select {
-		case waitErr = <-done:
-			exited = true
 		case <-tick.C:
 		case <-grace.C:
-			// Children the stage started during the grace period are below it too.
-			if !exited {
+			if !reaped() {
+				// Children the stage started during the grace period are below it too.
 				tree = append(tree, descendants(pid)...)
-			}
-			// A reaped stage pid may already belong to another process.
-			if exited {
-				tree = tree[1:]
+				_ = syscall.Kill(pid, syscall.SIGKILL)
 			}
 			signalAll(alive(tree), syscall.SIGKILL)
 			if !exited {
@@ -136,7 +146,7 @@ func stopTree(pid int, done <-chan error) error {
 			}
 			return waitErr
 		}
-		if exited && len(alive(tree[1:])) == 0 {
+		if reaped() && len(alive(tree)) == 0 {
 			return waitErr
 		}
 	}

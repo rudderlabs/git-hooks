@@ -174,7 +174,7 @@ func TestHookKeepsStdinStreamingForProcReceive(t *testing.T) {
 
 func TestHookReplaysStdinWithoutTempDir(t *testing.T) {
 	t.Parallel()
-	for _, hook := range []string{"pre-push", "post-rewrite"} {
+	for _, hook := range []string{"pre-push", "post-rewrite", "reference-transaction"} {
 		t.Run(hook, func(t *testing.T) {
 			t.Parallel()
 			f := newFixture(t)
@@ -219,4 +219,24 @@ func TestHookDoesNotWaitForChildHoldingStdin(t *testing.T) {
 	})
 	require.NoError(t, err, string(out))
 	require.Less(t, time.Since(start), 20*time.Second, "the hook must not wait for the child that holds stdin")
+}
+
+func TestHookBackgroundChildReadsAllReplayedInput(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	out := filepath.Join(f.repo, "bg.count")
+	// The child reads after the stage has exited.
+	f.write(filepath.Join(f.home, ".git-hooks", "pre-push.d", "bg"), "#!/bin/sh\n(sleep 1; wc -c > "+out+") <&0 >/dev/null 2>&1 &\nexit 0\n")
+	input := strings.Repeat("0000000000000000000000000000000000000000 1111111111111111111111111111111111111111 refs/heads/main\n", 4000)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := f.hook(ctx, "pre-push", f.env(), "origin", "url")
+	cmd.Stdin = strings.NewReader(input)
+	res, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(res))
+	require.Eventually(t, func() bool {
+		b, err := os.ReadFile(out)
+		return err == nil && strings.TrimSpace(string(b)) == strconv.Itoa(len(input))
+	}, 10*time.Second, 50*time.Millisecond)
 }

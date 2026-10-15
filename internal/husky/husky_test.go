@@ -464,3 +464,15 @@ func TestResolveSymlinkedStubHelperKeepsErrexit(t *testing.T) {
 	require.Error(t, err, "%s", output)
 	require.NotContains(t, string(output), "after-false")
 }
+
+func TestResolveDanglingHelperSymlinkStillRuns(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".husky", "_"), 0755))
+	require.NoError(t, os.Symlink(filepath.Join(t.TempDir(), "missing.sh"), filepath.Join(root, ".husky", "_", "husky.sh")))
+	writeFile(t, root, ".husky/pre-commit", ". \"$(dirname -- \"$0\")/_/husky.sh\"\nexit 0\n", 0644)
+	require.NoError(t, os.Mkdir(filepath.Join(root, "node_modules"), 0755))
+	plan := husky.Resolve(root, "pre-commit", nil, []string{"HOME=" + t.TempDir(), "PATH=/usr/bin:/bin"})
+	// A broken helper must block the commit as before, not turn into a skip.
+	require.Equal(t, husky.Run, plan.Action)
+}
