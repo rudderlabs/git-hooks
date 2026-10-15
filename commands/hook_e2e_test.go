@@ -202,8 +202,6 @@ func TestHookDoesNotWaitForChildHoldingStdin(t *testing.T) {
 	pidFile := filepath.Join(f.repo, "child.pid")
 	// The child inherits stdin, never reads it, and outlives the hook.
 	f.write(filepath.Join(f.home, ".git-hooks", "pre-push.d", "leaves-child"), "#!/bin/sh\nsleep 60 <&0 >/dev/null 2>&1 &\necho $! > "+pidFile+"\nexit 0\n")
-	// A second stage makes git-hooks replay the input; one stage reads git's stdin directly.
-	f.write(filepath.Join(f.repo, ".git", "hooks", "pre-push"), "#!/bin/sh\ncat > /dev/null\n")
 	input := strings.Repeat("0000000000000000000000000000000000000000 1111111111111111111111111111111111111111 refs/heads/main\n", 4000)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -229,7 +227,6 @@ func TestHookBackgroundChildReadsAllReplayedInput(t *testing.T) {
 	out := filepath.Join(f.repo, "bg.count")
 	// The child reads after the stage has exited.
 	f.write(filepath.Join(f.home, ".git-hooks", "pre-push.d", "bg"), "#!/bin/sh\n(sleep 1; wc -c > "+out+") <&0 >/dev/null 2>&1 &\nexit 0\n")
-	f.write(filepath.Join(f.repo, ".git", "hooks", "pre-push"), "#!/bin/sh\ncat > /dev/null\n")
 	input := strings.Repeat("0000000000000000000000000000000000000000 1111111111111111111111111111111111111111 refs/heads/main\n", 4000)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -244,23 +241,25 @@ func TestHookBackgroundChildReadsAllReplayedInput(t *testing.T) {
 	}, 10*time.Second, 50*time.Millisecond)
 }
 
-func TestHookSingleStageReadsStdinDirectly(t *testing.T) {
+func TestHookWithoutStagesNeverReadsStdin(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	tmp := t.TempDir()
-	// The only stage lists the temp dir while it runs: no spool may exist.
-	f.write(filepath.Join(f.repo, ".git", "hooks", "reference-transaction"), "#!/bin/sh\nls \"$TMPDIR\" > \"$PWD/tmp.list\"\ncat > \"$PWD/standard.in\"\n")
-
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cmd := f.hook(ctx, "reference-transaction", append(f.env(), "TMPDIR="+tmp), "prepared")
-	cmd.Stdin = strings.NewReader("0000 1111 refs/heads/main\n")
-	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, string(out))
-	listing, err := os.ReadFile(filepath.Join(f.repo, "tmp.list"))
+	// No stage, so git-hooks must not touch disk: TMPDIR does not even exist.
+	cmd := f.hook(ctx, "reference-transaction", append(f.env(), "TMPDIR=/nonexistent-git-hooks-tmp"), "prepared")
+	in, err := cmd.StdinPipe()
 	require.NoError(t, err)
-	require.Empty(t, strings.TrimSpace(string(listing)), "one stage needs no spool file")
-	got, err := os.ReadFile(filepath.Join(f.repo, "standard.in"))
-	require.NoError(t, err)
-	require.Equal(t, "0000 1111 refs/heads/main\n", string(got))
+	require.NoError(t, cmd.Start())
+	// git-hooks must exit without waiting for input that never ends.
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(10 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("git-hooks read stdin although no stage runs")
+	}
+	_ = in.Close()
 }

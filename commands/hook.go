@@ -89,11 +89,13 @@ func executeHook(hookName string) error {
 	}
 	globalDir := filepath.Join(home, ".git-hooks", hookName+".d")
 	repoDir := filepath.Join(".git-hooks", hookName+".d")
-	plan := husky.Resolve(repoRoot, hookName, args, os.Environ())
+	// Only for counting: an earlier stage may run npm install, so husky is
+	// resolved again right before its own stage.
+	countPlan := husky.Resolve(repoRoot, hookName, args, os.Environ())
 
 	// Nothing runs yet that could handle Ctrl-C, so it cancels the read.
 	readCtx, stopRead := signal.NotifyContext(ctx, os.Interrupt)
-	stdin, err := replayableStdin(readCtx, hookName, countStages(readCtx, hookName, globalDir, repoDir, plan))
+	stdin, err := replayableStdin(readCtx, hookName, countStages(readCtx, hookName, globalDir, repoDir, countPlan))
 	// Ctrl-C kills git, which closes stdin; EOF can win the race against the cancel.
 	if err == nil && readCtx.Err() != nil {
 		_ = stdin.Close()
@@ -153,6 +155,7 @@ func executeHook(hookName string) error {
 	}
 
 	// 3. Husky: exactly one entry point per hook.
+	plan := husky.Resolve(repoRoot, hookName, args, os.Environ())
 	switch plan.Action {
 	case husky.Skip:
 		fmt.Fprintf(os.Stderr, "git-hooks: WARNING: husky %s skipped: %s\n", hookName, plan.Reason)
@@ -168,9 +171,13 @@ func executeHook(hookName string) error {
 
 type runner func(argv []string, env []string) error
 
-// countStages counts the stages that will get the hook input. Replay is only
-// needed for two or more; one stage reads git's stdin directly, with no disk.
+// countStages counts the stages that will get the hook input. With none,
+// git-hooks never reads stdin or touches disk: most reference-transaction
+// calls, which git makes on every ref update, have no stage at all.
 func countStages(ctx context.Context, hookName, globalDir, repoDir string, plan husky.Plan) int {
+	if !bufferedHooks[hookName] {
+		return 0
+	}
 	n := 0
 	for _, dir := range []string{globalDir, repoDir} {
 		entries, _ := os.ReadDir(dir)
@@ -287,12 +294,13 @@ var bufferedHooks = map[string]bool{
 // that the hook fails closed, because a validator must not see a cut list.
 const maxHookInput = 512 << 20
 
-// replayableStdin spools the input to a file. A file, unlike a pipe we feed,
-// needs no writer: exec never waits for a child that keeps stdin open, and a
-// child that reads late still gets every byte. If no directory takes the file,
-// the hook fails rather than hand a later stage an empty input.
+// replayableStdin spools the input to a file, even for one stage. git then
+// never blocks writing to a stage that left a child holding stdin, exec never
+// waits on a feeding goroutine, and a child that reads late still gets every
+// byte. If no directory takes the file, the hook fails rather than hand a
+// stage an empty or cut input.
 func replayableStdin(ctx context.Context, hookName string, stages int) (*stdinSource, error) {
-	if !bufferedHooks[hookName] || stages < 2 {
+	if !bufferedHooks[hookName] || stages == 0 {
 		return &stdinSource{}, nil
 	}
 	info, err := os.Stdin.Stat()
@@ -324,11 +332,30 @@ func replayableStdin(ctx context.Context, hookName string, stages int) (*stdinSo
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-	path, err := writeSpool(ctx, data)
-	if err != nil {
-		return nil, fmt.Errorf("buffering %s input: %w", hookName, err)
+	type spooled struct {
+		path string
+		err  error
 	}
-	return &stdinSource{spool: path}, nil
+	// A write to a stalled filesystem must not outlast a cancel.
+	wrote := make(chan spooled, 1)
+	go func() {
+		path, err := writeSpool(ctx, data)
+		wrote <- spooled{path, err}
+	}()
+	select {
+	case w := <-wrote:
+		if w.err != nil {
+			return nil, fmt.Errorf("buffering %s input: %w", hookName, w.err)
+		}
+		return &stdinSource{spool: w.path}, nil
+	case <-ctx.Done():
+		go func() {
+			if w := <-wrote; w.err == nil {
+				_ = os.Remove(w.path)
+			}
+		}()
+		return nil, ctx.Err()
+	}
 }
 
 // writeSpool tries the temp dir, /tmp, then the git dir, which is writable
