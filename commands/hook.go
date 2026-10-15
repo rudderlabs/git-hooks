@@ -424,7 +424,7 @@ func writeSpool(ctx context.Context, data []byte, current *spoolPath) (string, e
 		_, werr := f.Write(data)
 		cerr := f.Close()
 		if err := errors.Join(werr, cerr); err != nil {
-			_ = os.Remove(f.Name())
+			removeBounded(f.Name())
 			errs = append(errs, err)
 			continue
 		}

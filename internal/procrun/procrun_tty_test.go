@@ -74,10 +74,33 @@ func TestStopTreeKillsStageWithoutPs(t *testing.T) {
 	require.Less(t, time.Since(start), 10*time.Second)
 }
 
-func TestStopTreeKillsTermIgnoringChildWithoutPs(t *testing.T) {
+func TestStopTreeNeverSignalsUnverifiedPids(t *testing.T) {
+	// Not parallel: it changes a package variable.
+	unrelated := exec.Command("/bin/sleep", "300")
+	require.NoError(t, unrelated.Start())
+	t.Cleanup(func() { _ = unrelated.Process.Kill(); _, _ = unrelated.Process.Wait() })
+	stage := exec.Command("/bin/sleep", "300")
+	require.NoError(t, stage.Start())
+	done := make(chan error, 1)
+	go func() { done <- stage.Wait() }()
+
+	old := psPaths
+	psPaths = []string{"/nonexistent/ps"}
+	t.Cleanup(func() { psPaths = old })
+	// The tracked pid now belongs to an unrelated process, and ps cannot tell.
+	tree := []proc{{pid: unrelated.Process.Pid, start: "Thu Jan  1 00:00:00 1970"}}
+	start := time.Now()
+	require.Error(t, stopTreeWith(stage.Process.Pid, done, proc{pid: stage.Process.Pid}, tree), "the stage dies")
+	require.Less(t, time.Since(start), 3*time.Second, "no grace wait once the stage is gone")
+	require.NoError(t, unrelated.Process.Signal(syscall.Signal(0)), "an unverified pid is never signalled")
+}
+
+func TestStopTreeRecoversFromOneFailedPs(t *testing.T) {
 	// Not parallel: it changes a package variable.
 	dir := t.TempDir()
-	cmd := exec.Command("/bin/sh", "-c", `/bin/sh -c 'trap "" TERM; echo $$ > child; exec /bin/sleep 300' & while [ ! -s child ]; do :; done; wait`)
+	flaky := filepath.Join(dir, "ps")
+	require.NoError(t, os.WriteFile(flaky, []byte("#!/bin/sh\nif [ -f \""+dir+"/once\" ]; then exec /bin/ps \"$@\"; fi\ntouch \""+dir+"/once\"\nexit 1\n"), 0o755))
+	cmd := exec.Command("/bin/sh", "-c", "/bin/sleep 300 & echo $! > child; wait")
 	cmd.Dir = dir
 	require.NoError(t, cmd.Start())
 	done := make(chan error, 1)
@@ -90,15 +113,9 @@ func TestStopTreeKillsTermIgnoringChildWithoutPs(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = syscall.Kill(child, syscall.SIGKILL) })
 
-	// ps works for the first scan, then fails: the child must still get SIGKILL.
 	old := psPaths
+	psPaths = []string{flaky}
 	t.Cleanup(func() { psPaths = old })
-	snap := snapshot()
-	stage := proc{pid: cmd.Process.Pid, start: snap[cmd.Process.Pid].start}
-	tree := stage.descendants(snap)
-	require.NotEmpty(t, tree)
-	psPaths = []string{"/nonexistent/ps"}
-	stopErr := stopTreeWith(cmd.Process.Pid, done, stage, tree)
-	require.Error(t, stopErr)
-	require.Eventually(t, func() bool { return syscall.Kill(child, 0) == syscall.ESRCH }, 10*time.Second, 20*time.Millisecond)
+	require.Error(t, stopTree(cmd.Process.Pid, done))
+	require.Eventually(t, func() bool { return syscall.Kill(child, 0) == syscall.ESRCH }, 10*time.Second, 20*time.Millisecond, "the child must not outlive the stage")
 }

@@ -111,13 +111,12 @@ func stopTree(pid int, done <-chan error) error {
 	// A process is its pid plus its start time. A pid reused in a later
 	// second never matches and is never signalled. ps reports the start to
 	// the second, so a pid reused within the same second still would.
-	snap := snapshot()
-	stage := proc{pid: pid, start: snap[pid].start}
-	return stopTreeWith(pid, done, stage, stage.descendants(snap))
+	return stopTreeWith(pid, done, proc{pid: pid}, nil)
 }
 
-// stopTreeWith stops the stage and the processes in tree, then rescans
-// below the stage at the grace deadline.
+// stopTreeWith stops the stage and its descendants. tree holds processes
+// already known; the stage's start time is learned from snapshots while the
+// stage is unreaped.
 func stopTreeWith(pid int, done <-chan error, stage proc, tree []proc) error {
 	var waitErr error
 	exited := false
@@ -131,28 +130,63 @@ func stopTreeWith(pid int, done <-chan error, stage proc, tree []proc) error {
 		}
 		return exited
 	}
-	signalProcs(tree, pid, syscall.SIGTERM, reaped)
-	grace := time.NewTimer(5 * time.Second)
-	defer grace.Stop()
-	tick := time.NewTicker(50 * time.Millisecond)
-	defer tick.Stop()
-	for {
-		select {
-		case <-tick.C:
-		case <-grace.C:
-			// Children the stage started during the grace period are below it too.
-			tree = append(tree, stage.descendants(snapshot())...)
-			signalProcs(tree, pid, syscall.SIGKILL, reaped)
-			if !exited {
-				waitErr = <-done
+	known := map[proc]bool{}
+	var fresh []proc
+	add := func(ps []proc) {
+		for _, p := range ps {
+			if !known[p] {
+				known[p] = true
+				tree = append(tree, p)
+				fresh = append(fresh, p)
 			}
-			return waitErr
 		}
-		// A failed snapshot says nothing; wait for the next tick or the grace.
-		if snap := snapshot(); reaped() && snap != nil && len(live(tree, snap)) == 0 {
+	}
+	add(tree)
+	// learn takes the stage's identity only while it is unreaped: after the
+	// reap its pid, and the children below it, may be someone else's. This
+	// also recovers from a ps that failed on an earlier call.
+	learn := func() map[int]psEntry {
+		snap := snapshot()
+		if snap != nil && !reaped() {
+			if stage.start == "" {
+				stage.start = snap[pid].start
+			}
+			add(stage.descendants(snap))
+		}
+		return snap
+	}
+	// Learn the tree before the first signal: a stage that dies on SIGTERM
+	// takes the only route to its children with it. A ps that fails once
+	// gets two more tries; one that never works (BusyBox has no lstart)
+	// leaves only the stage to signal.
+	for i := 0; i < 3 && stage.start == "" && !reaped(); i++ {
+		learn()
+	}
+	if !reaped() {
+		_ = syscall.Kill(pid, syscall.SIGTERM)
+	}
+	// SIGTERM goes once to each process, so a TERM trap runs once.
+	signalProcs(fresh, pid, syscall.SIGTERM, reaped)
+	fresh = nil
+	// A fixed deadline: a slow ps must not stretch the grace period.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+		snap := learn()
+		signalProcs(fresh, pid, syscall.SIGTERM, reaped)
+		fresh = nil
+		// Without a snapshot no descendant can be verified, so once the stage
+		// is gone there is nothing left to wait for.
+		if reaped() && len(live(tree, snap)) == 0 {
 			return waitErr
 		}
 	}
+	learn()
+	signalProcs(tree, pid, syscall.SIGKILL, reaped)
+	if !exited {
+		waitErr = <-done
+	}
+	return waitErr
 }
 
 // psPaths is a variable so a test can make ps fail.
@@ -178,7 +212,10 @@ func snapshot() map[int]psEntry {
 	// Some Linux images keep ps only in /usr/bin. BusyBox ps lacks lstart and
 	// fails here; the callers then fall back to pids.
 	for _, ps := range psPaths {
-		if out, err = exec.CommandContext(ctx, ps, "-A", "-o", "pid=,ppid=,lstart=").Output(); err == nil {
+		cmd := exec.CommandContext(ctx, ps, "-A", "-o", "pid=,ppid=,lstart=")
+		// A ps that forks or hangs in the kernel must not hold Output past the deadline.
+		cmd.WaitDelay = 100 * time.Millisecond
+		if out, err = cmd.Output(); err == nil {
 			break
 		}
 	}
@@ -224,17 +261,12 @@ func (p proc) descendants(snap map[int]psEntry) []proc {
 }
 
 // live returns the processes that still run as themselves. Without a
-// snapshot it falls back to the pid alone, which can hit a reused pid but
-// never leaves the hook's processes running.
+// snapshot nothing can be verified, so nothing is returned: signalling a pid
+// that may now belong to someone else is worse than leaving a child running.
 func live(procs []proc, snap map[int]psEntry) []proc {
 	var out []proc
 	if snap == nil {
-		for _, p := range procs {
-			if syscall.Kill(p.pid, 0) == nil {
-				out = append(out, p)
-			}
-		}
-		return out
+		return nil
 	}
 	for _, p := range procs {
 		if e, ok := snap[p.pid]; ok && p.start != "" && e.start == p.start {
@@ -244,16 +276,19 @@ func live(procs []proc, snap map[int]psEntry) []proc {
 	return out
 }
 
-// signalProcs signals the stage and each descendant that still runs as
-// itself. The stage is our child: until cmd.Wait reaps it, its pid cannot be
-// reused, so it needs no start time and is signalled even when ps fails.
+// signalProcs signals each descendant that still runs as itself, and on
+// SIGKILL the stage too. The stage is our child: until cmd.Wait reaps it, its
+// pid cannot be reused, so it needs no start time and is signalled even when
+// ps fails.
 func signalProcs(procs []proc, stagePid int, sig syscall.Signal, reaped func() bool) {
-	for _, p := range live(procs, snapshot()) {
-		if p.pid != stagePid {
-			_ = syscall.Kill(p.pid, sig)
+	if len(procs) > 0 {
+		for _, p := range live(procs, snapshot()) {
+			if p.pid != stagePid {
+				_ = syscall.Kill(p.pid, sig)
+			}
 		}
 	}
-	if !reaped() {
+	if sig == syscall.SIGKILL && !reaped() {
 		_ = syscall.Kill(stagePid, sig)
 	}
 }
