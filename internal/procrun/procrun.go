@@ -164,8 +164,10 @@ func stopTreeWith(pid int, done <-chan error, stage proc, tree []proc) error {
 	// has no lstart) leaves only the stage to signal.
 	discover := start.Add(2500 * time.Millisecond)
 	for stage.start == "" && !reaped() && time.Now().Before(discover) {
-		if learn(discover) == nil {
-			// A ps that fails at once must not be retried in a tight loop.
+		learn(discover)
+		if stage.start == "" {
+			// A ps that fails, or does not list the stage yet, must not be
+			// retried in a tight loop.
 			time.Sleep(100 * time.Millisecond)
 		}
 	}
@@ -199,18 +201,30 @@ func stopTreeWith(pid int, done <-chan error, stage proc, tree []proc) error {
 	// A stopped process cannot exit, so its pid stays its own until it is
 	// killed: everything stopped here is killed by pid, even if ps fails now.
 	var stopped []int
-	if snap := snapshotBy(final); snap != nil {
+	// learn also adds children forked since the last loop scan.
+	if snap := learn(final); snap != nil {
 		for _, p := range live(tree, snap) {
 			if p.pid != pid && syscall.Kill(p.pid, syscall.SIGSTOP) == nil {
 				stopped = append(stopped, p.pid)
 			}
 		}
 	}
-	learn(final)
-	signalProcs(tree, pid, syscall.SIGKILL, reaped, final)
+	// Kill the frozen ones first, while they are still stopped and so still
+	// themselves; the verified pass below then skips them, so no pid gets a
+	// second, unchecked kill after it may have been reaped and reused.
+	frozen := map[int]bool{}
 	for _, p := range stopped {
+		frozen[p] = true
 		_ = syscall.Kill(p, syscall.SIGKILL)
 	}
+	learn(final)
+	var rest []proc
+	for _, p := range tree {
+		if !frozen[p.pid] {
+			rest = append(rest, p)
+		}
+	}
+	signalProcs(rest, pid, syscall.SIGKILL, reaped, final)
 	if !exited {
 		waitErr = <-done
 	}
