@@ -37,16 +37,24 @@ func TestStopTreeKillsDescendantsOnly(t *testing.T) {
 	require.NoError(t, syscall.Kill(os.Getpid(), 0), "the test process itself must survive")
 }
 
-func TestDescendants(t *testing.T) {
+func TestDescendantsFollowProcessIdentity(t *testing.T) {
 	t.Parallel()
 	cmd := exec.Command("sh", "-c", "sleep 30 & sleep 30 & wait")
 	require.NoError(t, cmd.Start())
+	stage := proc{pid: cmd.Process.Pid}
 	t.Cleanup(func() {
-		for _, p := range descendants(cmd.Process.Pid) {
-			_ = syscall.Kill(p, syscall.SIGKILL)
+		for _, p := range stage.descendants(snapshot()) {
+			_ = syscall.Kill(p.pid, syscall.SIGKILL)
 		}
 		_ = cmd.Process.Kill()
 		_, _ = cmd.Process.Wait()
 	})
-	require.Eventually(t, func() bool { return len(descendants(cmd.Process.Pid)) == 2 }, 5*time.Second, 20*time.Millisecond)
+	stage.start = snapshot()[stage.pid].start
+	require.NotEmpty(t, stage.start)
+	require.Eventually(t, func() bool { return len(stage.descendants(snapshot())) == 2 }, 5*time.Second, 20*time.Millisecond)
+
+	// The same pid with another start time is another process: no children, no signal.
+	reused := proc{pid: stage.pid, start: "Thu Jan  1 00:00:00 1970"}
+	require.Empty(t, reused.descendants(snapshot()))
+	require.Empty(t, live([]proc{reused}, snapshot()))
 }

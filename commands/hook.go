@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/rudderlabs/git-hooks/internal/husky"
 	"github.com/rudderlabs/git-hooks/internal/procrun"
@@ -353,8 +354,17 @@ func replayableStdin(ctx context.Context, hookName string, stages int) (*stdinSo
 	case <-ctx.Done():
 		// Remove the file now: the process exits right after this return.
 		// Unlinking is safe while the writer still holds it open.
-		if path := current.get(); path != "" {
-			_ = os.Remove(path)
+		if path := current.take(); path != "" {
+			// A stalled filesystem can block unlink too; do not hang git on it.
+			removed := make(chan struct{})
+			go func() {
+				_ = os.Remove(path)
+				close(removed)
+			}()
+			select {
+			case <-removed:
+			case <-time.After(time.Second):
+			}
 		}
 		return nil, ctx.Err()
 	}
@@ -362,19 +372,28 @@ func replayableStdin(ctx context.Context, hookName string, stages int) (*stdinSo
 
 // spoolPath shares the spool file name between the writer and a cancel.
 type spoolPath struct {
-	mu   sync.Mutex
-	path string
+	mu     sync.Mutex
+	path   string
+	closed bool
 }
 
-func (p *spoolPath) set(path string) {
+// set records the file being written. It reports false once the cancel has
+// taken the path, so the writer removes a file it created too late.
+func (p *spoolPath) set(path string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.closed {
+		return false
+	}
 	p.path = path
+	return true
 }
 
-func (p *spoolPath) get() string {
+// take returns the current file and stops any later set.
+func (p *spoolPath) take() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.closed = true
 	return p.path
 }
 
@@ -395,6 +414,10 @@ func writeSpool(ctx context.Context, data []byte, current *spoolPath) (string, e
 	}
 	var errs []error
 	for _, dir := range dirs {
+		// After a cancel the caller has returned; a new file would never be removed.
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
 		d := dir()
 		if d == "" {
 			continue
@@ -404,7 +427,11 @@ func writeSpool(ctx context.Context, data []byte, current *spoolPath) (string, e
 			errs = append(errs, err)
 			continue
 		}
-		current.set(f.Name())
+		if !current.set(f.Name()) {
+			_ = f.Close()
+			_ = os.Remove(f.Name())
+			return "", ctx.Err()
+		}
 		_, werr := f.Write(data)
 		cerr := f.Close()
 		if err := errors.Join(werr, cerr); err != nil {

@@ -110,8 +110,6 @@ func stopGroup(pid int, done <-chan error) error {
 func stopTree(pid int, done <-chan error) error {
 	var waitErr error
 	exited := false
-	// reaped reports whether cmd.Wait has returned. After that the stage pid
-	// may belong to another process, so it is checked right before each signal.
 	reaped := func() bool {
 		if !exited {
 			select {
@@ -122,14 +120,14 @@ func stopTree(pid int, done <-chan error) error {
 		}
 		return exited
 	}
-	var tree []int
-	if !reaped() {
-		tree = descendants(pid)
-		if !reaped() {
-			_ = syscall.Kill(pid, syscall.SIGTERM)
-		}
+	// A process is its pid plus its start time. Pids get reused; the pair
+	// does not, so a reused pid never matches and is never signalled.
+	stage := proc{pid: pid}
+	if snap := snapshot(); !reaped() {
+		stage.start = snap[pid].start
 	}
-	signalAll(tree, syscall.SIGTERM)
+	tree := stage.descendants(snapshot())
+	signalProcs(append(tree, stage), pid, syscall.SIGTERM, reaped)
 	grace := time.NewTimer(5 * time.Second)
 	defer grace.Stop()
 	tick := time.NewTicker(50 * time.Millisecond)
@@ -138,81 +136,97 @@ func stopTree(pid int, done <-chan error) error {
 		select {
 		case <-tick.C:
 		case <-grace.C:
-			// Children the stage started during the grace period are below it
-			// too. Scan only while the stage is unreaped, or a reused pid's
-			// children would join the list; check again right before the signal,
-			// because ps can take a while. Signalling by pid still leaves a
-			// window of microseconds that only a pidfd could close.
-			if !reaped() {
-				scanned := descendants(pid)
-				// If the stage was reaped during the scan, the pid may already
-				// be another process's, and so may its children: drop the scan.
-				if !reaped() {
-					tree = append(tree, scanned...)
-					_ = syscall.Kill(pid, syscall.SIGKILL)
-				}
-			}
-			signalAll(alive(tree), syscall.SIGKILL)
+			// Children the stage started during the grace period are below it too.
+			tree = append(tree, stage.descendants(snapshot())...)
+			signalProcs(append(tree, stage), pid, syscall.SIGKILL, reaped)
 			if !exited {
 				waitErr = <-done
 			}
 			return waitErr
 		}
-		if reaped() && len(alive(tree)) == 0 {
+		if reaped() && len(live(tree, snapshot())) == 0 {
 			return waitErr
 		}
 	}
 }
 
-func alive(pids []int) []int {
-	var out []int
-	for _, p := range pids {
-		if syscall.Kill(p, 0) == nil {
+type proc struct {
+	pid   int
+	start string
+}
+
+type psEntry struct {
+	ppid  int
+	start string
+}
+
+// snapshot reads every process with its parent and start time. ps runs by
+// absolute path under a deadline, so a broken PATH cannot hang a kill.
+func snapshot() map[int]psEntry {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "/bin/ps", "-A", "-o", "pid=,ppid=,lstart=").Output()
+	if err != nil {
+		return nil
+	}
+	procs := map[int]psEntry{}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		pid, err1 := strconv.Atoi(fields[0])
+		ppid, err2 := strconv.Atoi(fields[1])
+		if err1 == nil && err2 == nil {
+			procs[pid] = psEntry{ppid: ppid, start: strings.Join(fields[2:], " ")}
+		}
+	}
+	return procs
+}
+
+// descendants lists the processes below p, but only while p is still the
+// same process: below a reused pid live someone else's children.
+func (p proc) descendants(snap map[int]psEntry) []proc {
+	if p.start == "" || snap[p.pid].start != p.start {
+		return nil
+	}
+	children := map[int][]int{}
+	for pid, e := range snap {
+		children[e.ppid] = append(children[e.ppid], pid)
+	}
+	var all []proc
+	queue := []int{p.pid}
+	for len(queue) > 0 {
+		next := queue[0]
+		queue = queue[1:]
+		for _, c := range children[next] {
+			all = append(all, proc{pid: c, start: snap[c].start})
+			queue = append(queue, c)
+		}
+	}
+	return all
+}
+
+// live returns the processes that still run as themselves.
+func live(procs []proc, snap map[int]psEntry) []proc {
+	var out []proc
+	for _, p := range procs {
+		if e, ok := snap[p.pid]; ok && p.start != "" && e.start == p.start {
 			out = append(out, p)
 		}
 	}
 	return out
 }
 
-func signalAll(pids []int, sig syscall.Signal) {
-	for _, p := range pids {
-		_ = syscall.Kill(p, sig)
-	}
-}
-
-// descendants lists every process below pid, using ps because neither
-// darwin nor linux offers a portable child list in the standard library.
-// The absolute path and the deadline keep a broken PATH from hanging a kill.
-func descendants(pid int) []int {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "/bin/ps", "-A", "-o", "pid=,ppid=").Output()
-	if err != nil {
-		return nil
-	}
-	children := map[int][]int{}
-	for _, line := range strings.Split(string(out), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) != 2 {
+// signalProcs signals each process that still runs as itself. The stage is
+// never signalled once cmd.Wait has reaped it.
+func signalProcs(procs []proc, stagePid int, sig syscall.Signal, reaped func() bool) {
+	for _, p := range live(procs, snapshot()) {
+		if p.pid == stagePid && reaped() {
 			continue
 		}
-		child, err1 := strconv.Atoi(fields[0])
-		parent, err2 := strconv.Atoi(fields[1])
-		if err1 == nil && err2 == nil {
-			children[parent] = append(children[parent], child)
-		}
+		_ = syscall.Kill(p.pid, sig)
 	}
-	var all []int
-	queue := []int{pid}
-	for len(queue) > 0 {
-		next := queue[0]
-		queue = queue[1:]
-		for _, c := range children[next] {
-			all = append(all, c)
-			queue = append(queue, c)
-		}
-	}
-	return all
 }
 
 // Background jobs ignore SIGINT in non-interactive shells, so failed stages need group cleanup.
