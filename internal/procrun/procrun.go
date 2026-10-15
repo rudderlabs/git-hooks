@@ -233,35 +233,46 @@ func stopTreeWith(pid int, done <-chan error, stage proc, tree []proc) error {
 	// Something else may have killed a frozen process meanwhile, and its pid
 	// may be reused: check each against a fresh snapshot. Only if ps fails
 	// now does a frozen pid get killed on the pid alone.
-	frozenProcs := make([]proc, 0, len(stopped))
-	for _, p := range tree {
-		if frozen[p.pid] {
-			frozenProcs = append(frozenProcs, p)
+	// One last snapshot decides every kill. Something else may have killed a
+	// frozen process and its pid may be reused, so each pid is checked. A
+	// verified process dies, frozen or not.
+	beforeVerify()
+	if snap := snapshotBy(time.Now().Add(time.Second)); snap != nil {
+		verified := map[int]bool{}
+		for _, p := range live(tree, snap) {
+			if p.pid != pid {
+				verified[p.pid] = true
+				_ = syscall.Kill(p.pid, syscall.SIGKILL)
+			}
 		}
-	}
-	if snap := snapshotBy(final.Add(500 * time.Millisecond)); snap != nil {
-		for _, p := range live(frozenProcs, snap) {
-			_ = syscall.Kill(p.pid, syscall.SIGKILL)
+		// A frozen pid that fails the check is either ours with a start time
+		// ps now reports differently, or someone else's after a reuse. SIGCONT
+		// is safe for both: ours is never left stopped forever, and a running
+		// stranger is untouched.
+		for _, p := range stopped {
+			if !verified[p] {
+				_ = syscall.Kill(p, syscall.SIGCONT)
+			}
 		}
 	} else {
+		// Without ps, only the frozen pids are known to be ours: a stopped
+		// process cannot exit on its own, so its pid is still its own.
 		for _, p := range stopped {
 			_ = syscall.Kill(p, syscall.SIGKILL)
 		}
 	}
-	// Anything verified but not frozen gets a checked kill; frozen pids
-	// never get a second, unchecked one.
-	var rest []proc
-	for _, p := range tree {
-		if !frozen[p.pid] {
-			rest = append(rest, p)
-		}
+	if !reaped() {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
 	}
-	signalProcs(rest, pid, syscall.SIGKILL, reaped, final)
 	if !exited {
 		waitErr = <-done
 	}
 	return waitErr
 }
+
+// beforeVerify lets a test change what ps reports right before the frozen
+// pids are checked.
+var beforeVerify = func() {}
 
 // psPaths is a variable so a test can make ps fail.
 var psPaths = []string{"/bin/ps", "/usr/bin/ps"}
