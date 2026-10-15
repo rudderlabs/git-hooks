@@ -243,18 +243,16 @@ func stopTreeWith(pid int, done <-chan error, stage proc, tree []proc) error {
 			}
 		}
 		// A frozen pid that fails the check is either ours with a start time
-		// ps now reports differently, or someone else's after a reuse. Resume
-		// it only while it looks like ours: stopped, or in uninterruptible I/O
-		// with our SIGSTOP still pending, and parented by init or by a process
-		// we track. A reused pid's new owner fails that, so a stranger gets no
-		// signal, and ours is never left stopped forever.
-		parents := map[int]bool{1: true, pid: true}
-		for _, p := range tree {
-			parents[p.pid] = true
-		}
+		// ps now reports differently, or someone else's after a reuse. Without
+		// a stable process handle (macOS has no pidfd) no rule tells them
+		// apart. Decision: resume it when ps shows it stopped (T, traced t) or
+		// in uninterruptible I/O with our SIGSTOP still pending (Linux D,
+		// macOS U). A stranger that reused the pid in that state within the
+		// freeze second gets a SIGCONT, which is harmless by default; leaving
+		// our own worker stopped would hold git's output pipe forever.
 		for _, p := range stopped {
 			e, ok := snap[p]
-			if ok && !verified[p] && (e.state == 'T' || e.state == 't' || e.state == 'D') && parents[e.ppid] {
+			if ok && !verified[p] && strings.IndexByte("TtDU", e.state) >= 0 {
 				_ = syscall.Kill(p, syscall.SIGCONT)
 			}
 		}
@@ -289,7 +287,7 @@ type proc struct {
 type psEntry struct {
 	ppid  int
 	start string
-	// state is the first letter of ps stat: T stopped (t traced), D in uninterruptible
+	// state is the first letter of ps stat: T stopped (t traced), D or U in uninterruptible
 	// I/O (a SIGSTOP sent then is still pending).
 	state byte
 }
