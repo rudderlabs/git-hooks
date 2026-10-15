@@ -230,9 +230,6 @@ func stopTreeWith(pid int, done <-chan error, stage proc, tree []proc) error {
 			break
 		}
 	}
-	// Something else may have killed a frozen process meanwhile, and its pid
-	// may be reused: check each against a fresh snapshot. Only if ps fails
-	// now does a frozen pid get killed on the pid alone.
 	// One last snapshot decides every kill. Something else may have killed a
 	// frozen process and its pid may be reused, so each pid is checked. A
 	// verified process dies, frozen or not.
@@ -246,11 +243,12 @@ func stopTreeWith(pid int, done <-chan error, stage proc, tree []proc) error {
 			}
 		}
 		// A frozen pid that fails the check is either ours with a start time
-		// ps now reports differently, or someone else's after a reuse. SIGCONT
-		// is safe for both: ours is never left stopped forever, and a running
-		// stranger is untouched.
+		// ps now reports differently, or someone else's after a reuse. Resume
+		// it only while it is still stopped, which a reused pid's owner almost
+		// never is, so ours is not left stopped forever and a running stranger
+		// gets no signal at all.
 		for _, p := range stopped {
-			if !verified[p] {
+			if e, ok := snap[p]; ok && !verified[p] && e.stopped {
 				_ = syscall.Kill(p, syscall.SIGCONT)
 			}
 		}
@@ -283,8 +281,9 @@ type proc struct {
 }
 
 type psEntry struct {
-	ppid  int
-	start string
+	ppid    int
+	start   string
+	stopped bool
 }
 
 // snapshot reads every process with its parent and start time. ps runs by
@@ -309,7 +308,7 @@ func snapshotBy(deadline time.Time) map[int]psEntry {
 		// Some Linux images keep ps only in /usr/bin. BusyBox ps lacks lstart
 		// and fails here; callers then signal only the stage.
 		for _, ps := range psPaths {
-			cmd := exec.CommandContext(ctx, ps, "-A", "-o", "pid=,ppid=,lstart=")
+			cmd := exec.CommandContext(ctx, ps, "-A", "-o", "pid=,ppid=,stat=,lstart=")
 			cmd.WaitDelay = 100 * time.Millisecond
 			if out, err := cmd.Output(); err == nil {
 				result <- out
@@ -329,13 +328,13 @@ func snapshotBy(deadline time.Time) map[int]psEntry {
 	procs := map[int]psEntry{}
 	for _, line := range strings.Split(string(out), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 3 {
+		if len(fields) < 4 {
 			continue
 		}
 		pid, err1 := strconv.Atoi(fields[0])
 		ppid, err2 := strconv.Atoi(fields[1])
 		if err1 == nil && err2 == nil {
-			procs[pid] = psEntry{ppid: ppid, start: strings.Join(fields[2:], " ")}
+			procs[pid] = psEntry{ppid: ppid, stopped: strings.HasPrefix(fields[2], "T"), start: strings.Join(fields[3:], " ")}
 		}
 	}
 	return procs

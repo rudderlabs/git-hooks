@@ -173,27 +173,11 @@ func TestStopTreeCatchesForksOfAnOrphanedWorker(t *testing.T) {
 	// The stage dies on SIGTERM; its worker ignores TERM and keeps forking.
 	cmd := exec.Command("/bin/sh", "-c", `/bin/sh -c 'trap "" TERM; echo $$ > worker; while :; do /bin/sh -c "trap \"\" TERM; exec /bin/sleep 1001" & echo $! >> kids; /bin/sleep 0.05; done' & /bin/sleep 300`)
 	cmd.Dir = dir
+	// Its own process group lets cleanup stop everything it started, even if
+	// the test fails before stopTree runs.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	require.NoError(t, cmd.Start())
-	// The worker forks forever; kill it ourselves whatever stopTree does,
-	// but only while its pid still has the start time recorded here.
-	var worker proc
-	require.Eventually(t, func() bool {
-		b, err := os.ReadFile(filepath.Join(dir, "worker"))
-		if err != nil {
-			return false
-		}
-		pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
-		if err != nil {
-			return false
-		}
-		worker = proc{pid: pid, start: snapshot()[pid].start}
-		return worker.start != ""
-	}, 5*time.Second, 10*time.Millisecond)
-	t.Cleanup(func() {
-		if len(live([]proc{worker}, snapshot())) == 1 {
-			_ = syscall.Kill(worker.pid, syscall.SIGKILL)
-		}
-	})
+	t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) })
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 	time.Sleep(500 * time.Millisecond)
@@ -250,7 +234,10 @@ func TestStopTreeNeverLeavesAProcessStopped(t *testing.T) {
 	_ = stopTree(cmd.Process.Pid, done)
 
 	out, err := exec.Command("/bin/ps", "-o", "state=", "-p", strconv.Itoa(child)).Output()
-	if err == nil {
-		require.NotContains(t, strings.TrimSpace(string(out)), "T", "an unverifiable process may run on, but never stay stopped")
+	var exitErr *exec.ExitError
+	gone := errors.As(err, &exitErr) && exitErr.ExitCode() == 1 && len(out) == 0
+	if err != nil && !gone {
+		t.Fatalf("ps failed: %v", err)
 	}
+	require.NotContains(t, strings.TrimSpace(string(out)), "T", "an unverifiable process may run on, but never stay stopped")
 }
