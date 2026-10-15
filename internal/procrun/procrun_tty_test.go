@@ -3,6 +3,7 @@
 package procrun
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -170,9 +171,17 @@ func TestStopTreeCatchesForksOfAnOrphanedWorker(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	// The stage dies on SIGTERM; its worker ignores TERM and keeps forking.
-	cmd := exec.Command("/bin/sh", "-c", `/bin/sh -c 'trap "" TERM; while :; do /bin/sh -c "trap \"\" TERM; exec /bin/sleep 1001" & echo $! >> kids; /bin/sleep 0.05; done' & /bin/sleep 300`)
+	cmd := exec.Command("/bin/sh", "-c", `/bin/sh -c 'trap "" TERM; echo $$ > worker; while :; do /bin/sh -c "trap \"\" TERM; exec /bin/sleep 1001" & echo $! >> kids; /bin/sleep 0.05; done' & /bin/sleep 300`)
 	cmd.Dir = dir
 	require.NoError(t, cmd.Start())
+	// The worker forks forever; kill it ourselves whatever stopTree does.
+	t.Cleanup(func() {
+		if b, err := os.ReadFile(filepath.Join(dir, "worker")); err == nil {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	})
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 	time.Sleep(500 * time.Millisecond)
@@ -185,7 +194,12 @@ func TestStopTreeCatchesForksOfAnOrphanedWorker(t *testing.T) {
 		pid, err := strconv.Atoi(field)
 		require.NoError(t, err)
 		if syscall.Kill(pid, 0) == nil {
-			out, _ := exec.Command("/bin/ps", "-o", "command=", "-p", field).Output()
+			// A pid that is gone makes ps exit 1 with no output; anything else must work.
+			out, err := exec.Command("/bin/ps", "-o", "command=", "-p", field).Output()
+			var exitErr *exec.ExitError
+			if err != nil && !errors.As(err, &exitErr) {
+				t.Fatalf("ps failed: %v", err)
+			}
 			if strings.Contains(string(out), "sleep 1001") {
 				leaked = append(leaked, pid)
 				_ = syscall.Kill(pid, syscall.SIGKILL)

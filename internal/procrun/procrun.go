@@ -150,18 +150,17 @@ func stopTreeWith(pid int, done <-chan error, stage proc, tree []proc) error {
 		if snap == nil {
 			return nil
 		}
+		roots := live(tree, snap)
 		if !reaped() {
 			if stage.start == "" {
 				stage.start = snap[pid].start
 			}
-			add(stage.descendants(snap))
+			roots = append(roots, stage)
 		}
 		// A verified descendant is ours, and so are its children, even after
 		// the stage died and it was reparented: a TERM-ignoring worker keeps
 		// forking.
-		for _, p := range live(tree, snap) {
-			add(p.descendants(snap))
-		}
+		add(descendantsOf(roots, snap))
 		return snap
 	}
 	// Every ps call below is bounded by these deadlines, so the whole stop
@@ -209,15 +208,15 @@ func stopTreeWith(pid int, done <-chan error, stage proc, tree []proc) error {
 	}
 	// Freeze in rounds until a scan finds nothing new. A stopped process
 	// cannot fork, so the rounds end, and every parent stays alive while we
-	// look for its children. A stopped process also cannot exit, so its pid
-	// stays its own until we kill it: all of them are killed by pid below,
-	// once, even if ps fails by then.
+	// look for its children.
 	frozen := map[int]bool{}
 	var stopped []int
 	for time.Now().Before(final) {
 		snap := learn(final)
 		if snap == nil {
-			break
+			// Do not give up on discovery: a child forked late would escape.
+			time.Sleep(50 * time.Millisecond)
+			continue
 		}
 		added := false
 		for _, p := range live(tree, snap) {
@@ -231,8 +230,23 @@ func stopTreeWith(pid int, done <-chan error, stage proc, tree []proc) error {
 			break
 		}
 	}
-	for _, p := range stopped {
-		_ = syscall.Kill(p, syscall.SIGKILL)
+	// Something else may have killed a frozen process meanwhile, and its pid
+	// may be reused: check each against a fresh snapshot. Only if ps fails
+	// now does a frozen pid get killed on the pid alone.
+	frozenProcs := make([]proc, 0, len(stopped))
+	for _, p := range tree {
+		if frozen[p.pid] {
+			frozenProcs = append(frozenProcs, p)
+		}
+	}
+	if snap := snapshotBy(final.Add(500 * time.Millisecond)); snap != nil {
+		for _, p := range live(frozenProcs, snap) {
+			_ = syscall.Kill(p.pid, syscall.SIGKILL)
+		}
+	} else {
+		for _, p := range stopped {
+			_ = syscall.Kill(p, syscall.SIGKILL)
+		}
 	}
 	// Anything verified but not frozen gets a checked kill; frozen pids
 	// never get a second, unchecked one.
@@ -319,21 +333,35 @@ func snapshotBy(deadline time.Time) map[int]psEntry {
 // descendants lists the processes below p, but only while p is still the
 // same process: below a reused pid live someone else's children.
 func (p proc) descendants(snap map[int]psEntry) []proc {
-	if p.start == "" || snap[p.pid].start != p.start {
-		return nil
-	}
+	return descendantsOf([]proc{p}, snap)
+}
+
+// descendantsOf lists the processes below every root that still runs as
+// itself. It builds the parent map once per snapshot, so many roots cost one
+// pass over the process table.
+func descendantsOf(roots []proc, snap map[int]psEntry) []proc {
 	children := map[int][]int{}
 	for pid, e := range snap {
 		children[e.ppid] = append(children[e.ppid], pid)
 	}
+	seen := map[int]bool{}
+	var queue []int
+	for _, r := range roots {
+		if r.start != "" && snap[r.pid].start == r.start && !seen[r.pid] {
+			seen[r.pid] = true
+			queue = append(queue, r.pid)
+		}
+	}
 	var all []proc
-	queue := []int{p.pid}
 	for len(queue) > 0 {
 		next := queue[0]
 		queue = queue[1:]
 		for _, c := range children[next] {
-			all = append(all, proc{pid: c, start: snap[c].start})
-			queue = append(queue, c)
+			if !seen[c] {
+				seen[c] = true
+				all = append(all, proc{pid: c, start: snap[c].start})
+				queue = append(queue, c)
+			}
 		}
 	}
 	return all
