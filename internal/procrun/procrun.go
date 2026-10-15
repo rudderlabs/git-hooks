@@ -144,8 +144,11 @@ func stopTree(pid int, done <-chan error) error {
 			// because ps can take a while. Signalling by pid still leaves a
 			// window of microseconds that only a pidfd could close.
 			if !reaped() {
-				tree = append(tree, descendants(pid)...)
+				scanned := descendants(pid)
+				// If the stage was reaped during the scan, the pid may already
+				// be another process's, and so may its children: drop the scan.
 				if !reaped() {
+					tree = append(tree, scanned...)
 					_ = syscall.Kill(pid, syscall.SIGKILL)
 				}
 			}

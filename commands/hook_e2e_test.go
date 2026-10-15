@@ -263,3 +263,17 @@ func TestHookWithoutStagesNeverReadsStdin(t *testing.T) {
 	}
 	_ = in.Close()
 }
+
+func TestHookHuskySeesNodeModulesFromEarlierStage(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	// A bootstrap stage installs dependencies; husky must run after it, not be skipped.
+	f.write(filepath.Join(f.repo, ".git-hooks", "pre-commit.d", "bootstrap"), "#!/bin/sh\nmkdir -p node_modules\n")
+	f.write(filepath.Join(f.repo, ".husky", "pre-commit"), "touch \"$PWD/husky.ran\"\n")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := f.hook(ctx, "pre-commit", f.env()).CombinedOutput()
+	require.NoError(t, err, string(out))
+	require.FileExists(t, filepath.Join(f.repo, "husky.ran"), string(out))
+}

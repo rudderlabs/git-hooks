@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/rudderlabs/git-hooks/internal/husky"
@@ -337,9 +338,10 @@ func replayableStdin(ctx context.Context, hookName string, stages int) (*stdinSo
 		err  error
 	}
 	// A write to a stalled filesystem must not outlast a cancel.
+	var current spoolPath
 	wrote := make(chan spooled, 1)
 	go func() {
-		path, err := writeSpool(ctx, data)
+		path, err := writeSpool(ctx, data, &current)
 		wrote <- spooled{path, err}
 	}()
 	select {
@@ -349,19 +351,37 @@ func replayableStdin(ctx context.Context, hookName string, stages int) (*stdinSo
 		}
 		return &stdinSource{spool: w.path}, nil
 	case <-ctx.Done():
-		go func() {
-			if w := <-wrote; w.err == nil {
-				_ = os.Remove(w.path)
-			}
-		}()
+		// Remove the file now: the process exits right after this return.
+		// Unlinking is safe while the writer still holds it open.
+		if path := current.get(); path != "" {
+			_ = os.Remove(path)
+		}
 		return nil, ctx.Err()
 	}
+}
+
+// spoolPath shares the spool file name between the writer and a cancel.
+type spoolPath struct {
+	mu   sync.Mutex
+	path string
+}
+
+func (p *spoolPath) set(path string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.path = path
+}
+
+func (p *spoolPath) get() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.path
 }
 
 // writeSpool tries the temp dir, /tmp, then the git dir, which is writable
 // whenever git can update refs. A failed write (a full disk, a quota) moves
 // on to the next directory too.
-func writeSpool(ctx context.Context, data []byte) (string, error) {
+func writeSpool(ctx context.Context, data []byte, current *spoolPath) (string, error) {
 	dirs := []func() string{
 		os.TempDir,
 		func() string { return "/tmp" },
@@ -384,6 +404,7 @@ func writeSpool(ctx context.Context, data []byte) (string, error) {
 			errs = append(errs, err)
 			continue
 		}
+		current.set(f.Name())
 		_, werr := f.Write(data)
 		cerr := f.Close()
 		if err := errors.Join(werr, cerr); err != nil {
