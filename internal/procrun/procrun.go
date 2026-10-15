@@ -108,6 +108,17 @@ func stopGroup(pid int, done <-chan error) error {
 // stage and its descendants by pid, because signalling the group would kill
 // git and the shell's job with it.
 func stopTree(pid int, done <-chan error) error {
+	// A process is its pid plus its start time. A pid reused in a later
+	// second never matches and is never signalled. ps reports the start to
+	// the second, so a pid reused within the same second still would.
+	snap := snapshot()
+	stage := proc{pid: pid, start: snap[pid].start}
+	return stopTreeWith(pid, done, stage, stage.descendants(snap))
+}
+
+// stopTreeWith stops the stage and the processes in tree, then rescans
+// below the stage at the grace deadline.
+func stopTreeWith(pid int, done <-chan error, stage proc, tree []proc) error {
 	var waitErr error
 	exited := false
 	reaped := func() bool {
@@ -120,14 +131,7 @@ func stopTree(pid int, done <-chan error) error {
 		}
 		return exited
 	}
-	// A process is its pid plus its start time. Pids get reused; the pair
-	// does not, so a reused pid never matches and is never signalled.
-	stage := proc{pid: pid}
-	if snap := snapshot(); !reaped() {
-		stage.start = snap[pid].start
-	}
-	tree := stage.descendants(snapshot())
-	signalProcs(append(tree, stage), pid, syscall.SIGTERM, reaped)
+	signalProcs(tree, pid, syscall.SIGTERM, reaped)
 	grace := time.NewTimer(5 * time.Second)
 	defer grace.Stop()
 	tick := time.NewTicker(50 * time.Millisecond)
@@ -138,17 +142,21 @@ func stopTree(pid int, done <-chan error) error {
 		case <-grace.C:
 			// Children the stage started during the grace period are below it too.
 			tree = append(tree, stage.descendants(snapshot())...)
-			signalProcs(append(tree, stage), pid, syscall.SIGKILL, reaped)
+			signalProcs(tree, pid, syscall.SIGKILL, reaped)
 			if !exited {
 				waitErr = <-done
 			}
 			return waitErr
 		}
-		if reaped() && len(live(tree, snapshot())) == 0 {
+		// A failed snapshot says nothing; wait for the next tick or the grace.
+		if snap := snapshot(); reaped() && snap != nil && len(live(tree, snap)) == 0 {
 			return waitErr
 		}
 	}
 }
+
+// psPaths is a variable so a test can make ps fail.
+var psPaths = []string{"/bin/ps", "/usr/bin/ps"}
 
 type proc struct {
 	pid   int
@@ -165,7 +173,15 @@ type psEntry struct {
 func snapshot() map[int]psEntry {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "/bin/ps", "-A", "-o", "pid=,ppid=,lstart=").Output()
+	var out []byte
+	var err error
+	// Some Linux images keep ps only in /usr/bin. BusyBox ps lacks lstart and
+	// fails here; the callers then fall back to pids.
+	for _, ps := range psPaths {
+		if out, err = exec.CommandContext(ctx, ps, "-A", "-o", "pid=,ppid=,lstart=").Output(); err == nil {
+			break
+		}
+	}
 	if err != nil {
 		return nil
 	}
@@ -207,9 +223,19 @@ func (p proc) descendants(snap map[int]psEntry) []proc {
 	return all
 }
 
-// live returns the processes that still run as themselves.
+// live returns the processes that still run as themselves. Without a
+// snapshot it falls back to the pid alone, which can hit a reused pid but
+// never leaves the hook's processes running.
 func live(procs []proc, snap map[int]psEntry) []proc {
 	var out []proc
+	if snap == nil {
+		for _, p := range procs {
+			if syscall.Kill(p.pid, 0) == nil {
+				out = append(out, p)
+			}
+		}
+		return out
+	}
 	for _, p := range procs {
 		if e, ok := snap[p.pid]; ok && p.start != "" && e.start == p.start {
 			out = append(out, p)
@@ -218,14 +244,17 @@ func live(procs []proc, snap map[int]psEntry) []proc {
 	return out
 }
 
-// signalProcs signals each process that still runs as itself. The stage is
-// never signalled once cmd.Wait has reaped it.
+// signalProcs signals the stage and each descendant that still runs as
+// itself. The stage is our child: until cmd.Wait reaps it, its pid cannot be
+// reused, so it needs no start time and is signalled even when ps fails.
 func signalProcs(procs []proc, stagePid int, sig syscall.Signal, reaped func() bool) {
 	for _, p := range live(procs, snapshot()) {
-		if p.pid == stagePid && reaped() {
-			continue
+		if p.pid != stagePid {
+			_ = syscall.Kill(p.pid, sig)
 		}
-		_ = syscall.Kill(p.pid, sig)
+	}
+	if !reaped() {
+		_ = syscall.Kill(stagePid, sig)
 	}
 }
 

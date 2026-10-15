@@ -354,18 +354,7 @@ func replayableStdin(ctx context.Context, hookName string, stages int) (*stdinSo
 	case <-ctx.Done():
 		// Remove the file now: the process exits right after this return.
 		// Unlinking is safe while the writer still holds it open.
-		if path := current.take(); path != "" {
-			// A stalled filesystem can block unlink too; do not hang git on it.
-			removed := make(chan struct{})
-			go func() {
-				_ = os.Remove(path)
-				close(removed)
-			}()
-			select {
-			case <-removed:
-			case <-time.After(time.Second):
-			}
-		}
+		removeBounded(current.take())
 		return nil, ctx.Err()
 	}
 }
@@ -459,8 +448,23 @@ func (s *stdinSource) Open() (*os.File, func(), error) {
 
 // Close removes the spool. A child that still holds it open keeps reading.
 func (s *stdinSource) Close() error {
-	if s.spool == "" {
-		return nil
+	removeBounded(s.spool)
+	return nil
+}
+
+// removeBounded unlinks path but gives up after a second: a stalled
+// filesystem can block unlink too, and git must not hang on it.
+func removeBounded(path string) {
+	if path == "" {
+		return
 	}
-	return os.Remove(s.spool)
+	removed := make(chan struct{})
+	go func() {
+		_ = os.Remove(path)
+		close(removed)
+	}()
+	select {
+	case <-removed:
+	case <-time.After(time.Second):
+	}
 }
