@@ -93,7 +93,7 @@ func TestStopTreeNeverSignalsUnverifiedPids(t *testing.T) {
 	require.Error(t, stopTreeWith(stage.Process.Pid, done, proc{pid: stage.Process.Pid}, tree), "the stage dies")
 	// With a tracked process still unverified, the loop waits for ps to recover,
 	// but never past the grace deadline.
-	require.Less(t, time.Since(start), 8*time.Second)
+	require.Less(t, time.Since(start), 11*time.Second)
 	require.NoError(t, unrelated.Process.Signal(syscall.Signal(0)), "an unverified pid is never signalled")
 }
 
@@ -136,7 +136,7 @@ func TestStopTreeIsBoundedWhenPsHangs(t *testing.T) {
 	go func() { done <- cmd.Wait() }()
 	start := time.Now()
 	require.Error(t, stopTree(cmd.Process.Pid, done))
-	require.Less(t, time.Since(start), 9*time.Second, "a hanging ps must not stretch the stop")
+	require.Less(t, time.Since(start), 11*time.Second, "a hanging ps must not stretch the stop")
 }
 
 func TestStopTreeSurvivesOneFailedPsAfterReap(t *testing.T) {

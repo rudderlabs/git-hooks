@@ -156,16 +156,20 @@ func stopTreeWith(pid int, done <-chan error, stage proc, tree []proc) error {
 		return snap
 	}
 	// Every ps call below is bounded by these deadlines, so the whole stop
-	// takes at most about 8 s even when ps hangs.
+	// takes at most about 10 s even when ps hangs.
 	start := time.Now()
-	deadline := start.Add(5 * time.Second)
 	// Learn the tree before the first signal: a stage that dies on SIGTERM
-	// takes the only route to its children with it. A ps that fails gets
-	// retried within one second; one that never works (BusyBox has no
-	// lstart) leaves only the stage to signal.
-	for stage.start == "" && !reaped() && time.Since(start) < time.Second {
-		learn(start.Add(time.Second))
+	// takes the only route to its children with it. Discovery gets 2.5 s,
+	// room for one full ps call and a retry; a ps that never works (BusyBox
+	// has no lstart) leaves only the stage to signal.
+	discover := start.Add(2500 * time.Millisecond)
+	for stage.start == "" && !reaped() && time.Now().Before(discover) {
+		if learn(discover) == nil {
+			// A ps that fails at once must not be retried in a tight loop.
+			time.Sleep(100 * time.Millisecond)
+		}
 	}
+	deadline := time.Now().Add(5 * time.Second)
 	if !reaped() {
 		_ = syscall.Kill(pid, syscall.SIGTERM)
 	}
@@ -192,9 +196,21 @@ func stopTreeWith(pid int, done <-chan error, stage proc, tree []proc) error {
 	if !reaped() {
 		_ = syscall.Kill(pid, syscall.SIGSTOP)
 	}
-	signalProcs(tree, pid, syscall.SIGSTOP, reaped, final)
+	// A stopped process cannot exit, so its pid stays its own until it is
+	// killed: everything stopped here is killed by pid, even if ps fails now.
+	var stopped []int
+	if snap := snapshotBy(final); snap != nil {
+		for _, p := range live(tree, snap) {
+			if p.pid != pid && syscall.Kill(p.pid, syscall.SIGSTOP) == nil {
+				stopped = append(stopped, p.pid)
+			}
+		}
+	}
 	learn(final)
 	signalProcs(tree, pid, syscall.SIGKILL, reaped, final)
+	for _, p := range stopped {
+		_ = syscall.Kill(p, syscall.SIGKILL)
+	}
 	if !exited {
 		waitErr = <-done
 	}
