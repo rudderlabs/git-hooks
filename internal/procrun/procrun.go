@@ -48,7 +48,9 @@ func Run(ctx context.Context, argv []string, opt Options) error {
 	// A script without a #! line fails with ENOEXEC. Git and execvp run it
 	// with sh then, so hooks written that way work under plain git.
 	if errors.Is(err, syscall.ENOEXEC) {
-		cmd = newCmd(append([]string{"/bin/sh"}, argv...))
+		// cmd.Path is the resolved file; a bare argv[0] would make sh look it
+		// up relative to the repository instead.
+		cmd = newCmd(append([]string{"/bin/sh", cmd.Path}, argv[1:]...))
 		err = cmd.Start()
 	}
 	if err != nil {
