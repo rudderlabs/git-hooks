@@ -33,13 +33,9 @@ func Run(ctx context.Context, argv []string, opt Options) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if opt.Nice > 0 {
-		argv = append([]string{"nice", "-n", strconv.Itoa(opt.Nice)}, argv...)
-	}
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env, cmd.Dir = opt.Env, opt.Dir
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = opt.Stdin, opt.Stdout, opt.Stderr
-	applyCPUCap(cmd, opt.CPUs)
 	interactive := InForegroundJob()
 	if !interactive {
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

@@ -26,7 +26,6 @@ func Run(ctx context.Context, argv []string, opt Options) error {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Env, cmd.Dir = opt.Env, opt.Dir
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = opt.Stdin, opt.Stdout, opt.Stderr
-	applyCPUCap(cmd, opt.CPUs)
 	err := cmd.Run()
 	if ctx.Err() != nil {
 		message := "stage canceled and was killed"

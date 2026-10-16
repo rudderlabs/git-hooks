@@ -56,7 +56,6 @@ func (f *fixture) env() []string {
 		"PATH=" + os.Getenv("PATH"),
 		"GIT_CONFIG_GLOBAL=" + os.DevNull,
 		"GIT_CONFIG_NOSYSTEM=1",
-		"GIT_HOOKS_CPUS=0",
 	}
 }
 

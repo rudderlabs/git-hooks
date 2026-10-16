@@ -79,71 +79,6 @@ func readPID(t *testing.T, path string) int {
 	return pid
 }
 
-func isolatedCache(t *testing.T) string {
-	t.Helper()
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CACHE_HOME", home)
-	cache, err := os.UserCacheDir()
-	require.NoError(t, err)
-	return cache
-}
-
-func TestNodeOptionsAndCache(t *testing.T) {
-	cache := isolatedCache(t)
-	t.Setenv("NODE_OPTIONS", "--trace-warnings")
-	t.Setenv("GIT_HOOKS_CPUS", "99")
-	var out bytes.Buffer
-	opt := procrun.Options{CPUs: 2, Stdout: &out}
-	argv := []string{"sh", "-c", `printf '%s\n%s' "$NODE_OPTIONS" "$GIT_HOOKS_CPUS"`}
-	require.NoError(t, procrun.Run(context.Background(), argv, opt))
-	lines := strings.Split(out.String(), "\n")
-	require.Len(t, lines, 2)
-	require.Equal(t, "2", lines[1])
-	require.True(t, strings.HasPrefix(lines[0], "--trace-warnings --require="), lines[0])
-	path := strings.TrimPrefix(lines[0], "--trace-warnings --require=")
-	require.Equal(t, filepath.Join(cache, "git-hooks"), filepath.Dir(path))
-	require.Regexp(t, `^cpucap-[a-f0-9]+\.cjs$`, filepath.Base(path))
-	info, err := os.Stat(path)
-	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0o644), info.Mode().Perm())
-	out.Reset()
-	require.NoError(t, procrun.Run(context.Background(), argv, opt))
-	again, err := os.Stat(path)
-	require.NoError(t, err)
-	require.True(t, os.SameFile(info, again), "existing preload should be reused")
-	entries, err := os.ReadDir(filepath.Dir(path))
-	require.NoError(t, err)
-	require.Len(t, entries, 1)
-
-	out.Reset()
-	opt.Env = []string{"NODE_OPTIONS=--no-warnings", "GIT_HOOKS_CPUS=8"}
-	require.NoError(t, procrun.Run(context.Background(), argv, opt))
-	require.Equal(t, "--no-warnings --require="+path+"\n2", out.String())
-}
-
-func TestCPUCapDisabled(t *testing.T) {
-	cache := isolatedCache(t)
-	var out bytes.Buffer
-	err := procrun.Run(context.Background(), []string{"sh", "-c", `printf '%s' "$NODE_OPTIONS"`}, procrun.Options{Env: []string{"NODE_OPTIONS=--trace-warnings"}, Stdout: &out})
-	require.NoError(t, err)
-	require.Equal(t, "--trace-warnings", out.String())
-	_, err = os.Stat(filepath.Join(cache, "git-hooks"))
-	require.ErrorIs(t, err, os.ErrNotExist)
-}
-
-func TestCPUCapCacheWithSpaces(t *testing.T) {
-	home := filepath.Join(t.TempDir(), "has space")
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CACHE_HOME", home)
-	var out, stderr bytes.Buffer
-	err := procrun.Run(context.Background(), []string{"sh", "-c", `printf '%s\n%s' "$NODE_OPTIONS" "$GIT_HOOKS_CPUS"`}, procrun.Options{CPUs: 2, Env: []string{"NODE_OPTIONS=--trace-warnings"}, Stdout: &out, Stderr: &stderr})
-	require.NoError(t, err)
-	require.Equal(t, "--trace-warnings\n2", out.String())
-	require.Contains(t, stderr.String(), "warning")
-	require.Equal(t, 1, strings.Count(stderr.String(), "\n"))
-}
-
 func TestKillEscalatesAfterLeaderExits(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -191,85 +126,24 @@ func TestCanceledBeforeStart(t *testing.T) {
 	require.NoFileExists(t, filepath.Join(dir, "started"))
 }
 
-func TestCPUCapCacheFailure(t *testing.T) {
-	for _, name := range []string{"HOME unset", "read-only cache", "not a directory"} {
-		t.Run(name, func(t *testing.T) {
-			cache := isolatedCache(t)
-			switch name {
-			case "HOME unset":
-				t.Setenv("HOME", "")
-				t.Setenv("XDG_CACHE_HOME", "")
-			case "read-only cache":
-				require.NoError(t, os.MkdirAll(cache, 0o755))
-				require.NoError(t, os.Chmod(cache, 0o555))
-				t.Cleanup(func() { require.NoError(t, os.Chmod(cache, 0o755)) })
-			case "not a directory":
-				require.NoError(t, os.MkdirAll(cache, 0o755))
-				require.NoError(t, os.WriteFile(filepath.Join(cache, "git-hooks"), []byte("not a directory"), 0o644))
-			}
-			var out, stderr bytes.Buffer
-			opt := procrun.Options{CPUs: 2, Env: []string{"NODE_OPTIONS=--trace-warnings"}, Stdout: &out, Stderr: &stderr}
-			argv := []string{"sh", "-c", `printf '%s' "$NODE_OPTIONS"`}
-			require.NoError(t, procrun.Run(context.Background(), argv, opt))
-			require.Equal(t, "--trace-warnings", out.String())
-			require.True(t, strings.HasPrefix(stderr.String(), "git-hooks: warning: CPU cap skipped: "), stderr.String())
-			require.Equal(t, 1, strings.Count(stderr.String(), "\n"))
-			opt.Stderr = nil
-			require.NoError(t, procrun.Run(context.Background(), argv, opt))
-		})
-	}
-}
-
-func TestCPUCapNode(t *testing.T) {
-	if _, err := exec.LookPath("node"); err != nil {
-		t.Skip("node is not on PATH")
-	}
-	isolatedCache(t)
-	var out, stderr bytes.Buffer
-	err := procrun.Run(context.Background(), []string{"node", "-e", `console.log(require('os').availableParallelism?.() ?? require('os').cpus().length, require('os').cpus().length)`}, procrun.Options{CPUs: 2, Env: []string{}, Stdout: &out, Stderr: &stderr})
-	require.NoError(t, err, stderr.String())
-	require.Equal(t, "2 2\n", out.String())
-}
-
 func TestDefaultOptions(t *testing.T) {
 	for _, tc := range []struct {
-		name, timeout, cpus, nice string
-		wantTimeout               time.Duration
-		wantCPUs, wantNice        int
+		name, timeout string
+		want          time.Duration
 	}{
-		{"unset", "", "", "", 10 * time.Minute, 2, 10},
-		{"custom", "3s", "4", "5", 3 * time.Second, 4, 5},
-		{"disabled", "1m", "0", "0", time.Minute, 0, 0},
-		{"bad", "soon", "many", "kind", 10 * time.Minute, 2, 10},
-		{"negative", "-1s", "-1", "-1", 10 * time.Minute, 2, 10},
-		{"zero timeout", "0", "2", "10", 0, 2, 10},
-		{"zero duration", "0s", "2", "10", 0, 2, 10},
-		{"overflow", "999999999999999999999h", "999999999999999999999", "999999999999999999999", 10 * time.Minute, 2, 10},
+		{"unset", "", 10 * time.Minute},
+		{"custom", "3s", 3 * time.Second},
+		{"bad", "soon", 10 * time.Minute},
+		{"negative", "-1s", 10 * time.Minute},
+		{"zero", "0", 0},
+		{"zero duration", "0s", 0},
+		{"overflow", "999999999999999999999h", 10 * time.Minute},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("GIT_HOOKS_TIMEOUT", tc.timeout)
-			t.Setenv("GIT_HOOKS_CPUS", tc.cpus)
-			t.Setenv("GIT_HOOKS_NICE", tc.nice)
-			opt := procrun.DefaultOptions()
-			require.Equal(t, tc.wantTimeout, opt.Timeout)
-			require.Equal(t, tc.wantCPUs, opt.CPUs)
-			require.Equal(t, tc.wantNice, opt.Nice)
+			require.Equal(t, tc.want, procrun.DefaultOptions().Timeout)
 		})
 	}
-}
-
-func TestNice(t *testing.T) {
-	t.Parallel()
-	readNice := func(n int) int {
-		var out bytes.Buffer
-		err := procrun.Run(context.Background(), []string{"sh", "-c", "ps -o nice= -p $$"}, procrun.Options{Nice: n, Stdout: &out, Stderr: &out})
-		require.NoError(t, err, out.String())
-		value, err := strconv.Atoi(strings.TrimSpace(out.String()))
-		require.NoError(t, err)
-		return value
-	}
-	base := readNice(0)
-	require.Equal(t, min(base+5, 19), readNice(5))
 }
 
 func TestEnvironmentAndIO(t *testing.T) {
