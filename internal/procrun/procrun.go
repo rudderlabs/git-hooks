@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-// Run executes argv with the supplied resource limits.
+// Run executes argv under the stage timeout.
 //
 // When git runs in a terminal, the stage stays in git's process group, so
 // Ctrl-C, Ctrl-Z, fg, bg and kill %1 work as the shell expects. Without a

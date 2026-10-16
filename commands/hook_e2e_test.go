@@ -276,3 +276,20 @@ func TestHookHuskySeesNodeModulesFromEarlierStage(t *testing.T) {
 	require.NoError(t, err, string(out))
 	require.FileExists(t, filepath.Join(f.repo, "husky.ran"), string(out))
 }
+
+func TestHookRunsScriptsWithoutShebang(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	// Git runs a hook without a #! line through sh; git-hooks must too.
+	f.write(filepath.Join(f.home, ".git-hooks", "pre-commit.d", "global"), "echo global > \"$PWD/global.ran\"\n")
+	f.write(filepath.Join(f.repo, ".git-hooks", "pre-commit.d", "repo"), "echo repo > \"$PWD/repo.ran\"\n")
+	f.write(filepath.Join(f.repo, ".git", "hooks", "pre-commit"), "echo standard > \"$PWD/standard.ran\"\n")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := f.hook(ctx, "pre-commit", f.env()).CombinedOutput()
+	require.NoError(t, err, string(out))
+	for _, name := range []string{"global.ran", "repo.ran", "standard.ran"} {
+		require.FileExists(t, filepath.Join(f.repo, name), string(out))
+	}
+}
