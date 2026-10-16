@@ -215,7 +215,7 @@ func executeScriptsInDir(dir string, args []string, run runner) error {
 			if err != nil {
 				return err
 			}
-			if err := run(scriptArgv(scriptPath, args), nil); err != nil {
+			if err := run(append([]string{scriptPath}, args...), nil); err != nil {
 				return err
 			}
 		}
@@ -253,7 +253,7 @@ func executeStandardGitHook(ctx context.Context, hookName string, args []string,
 		fmt.Fprintf(os.Stderr, "git-hooks: WARNING: %s calls git-hooks again and was skipped\n", path)
 		return nil
 	}
-	return run(scriptArgv(path, args), append(os.Environ(), runningStandardHookEnv+"="+resolved))
+	return run(append([]string{path}, args...), append(os.Environ(), runningStandardHookEnv+"="+resolved))
 }
 
 // standardHookPath returns <common git dir>/hooks/<hook>. It must not use
@@ -467,20 +467,4 @@ func removeBounded(path string) {
 	case <-removed:
 	case <-time.After(time.Second):
 	}
-}
-
-// scriptArgv runs a script without a #! line through /bin/sh. The kernel
-// refuses such a file (ENOEXEC); git, and execvp, fall back to sh for it, so
-// hooks written that way work under plain git.
-func scriptArgv(path string, args []string) []string {
-	f, err := os.Open(path)
-	if err != nil {
-		return append([]string{path}, args...)
-	}
-	defer f.Close()
-	head := make([]byte, 2)
-	if n, _ := io.ReadFull(f, head); n == 2 && string(head) == "#!" {
-		return append([]string{path}, args...)
-	}
-	return append([]string{"/bin/sh", path}, args...)
 }

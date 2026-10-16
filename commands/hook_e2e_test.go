@@ -280,16 +280,45 @@ func TestHookHuskySeesNodeModulesFromEarlierStage(t *testing.T) {
 func TestHookRunsScriptsWithoutShebang(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	// Git runs a hook without a #! line through sh; git-hooks must too.
-	f.write(filepath.Join(f.home, ".git-hooks", "pre-commit.d", "global"), "echo global > \"$PWD/global.ran\"\n")
+	// Git runs a hook without a #! line through sh after ENOEXEC; repo stages do too.
 	f.write(filepath.Join(f.repo, ".git-hooks", "pre-commit.d", "repo"), "echo repo > \"$PWD/repo.ran\"\n")
 	f.write(filepath.Join(f.repo, ".git", "hooks", "pre-commit"), "echo standard > \"$PWD/standard.ran\"\n")
+	// A compiled binary has no #! either and must still run directly.
+	bin, err := os.ReadFile("/usr/bin/true")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(f.repo, ".git-hooks", "pre-commit.d", "zbinary"), bin, 0o755))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	out, err := f.hook(ctx, "pre-commit", f.env()).CombinedOutput()
 	require.NoError(t, err, string(out))
-	for _, name := range []string{"global.ran", "repo.ran", "standard.ran"} {
+	for _, name := range []string{"repo.ran", "standard.ran"} {
 		require.FileExists(t, filepath.Join(f.repo, name), string(out))
 	}
+}
+
+func TestHookNeverRunsANonExecutableScript(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	path := filepath.Join(f.repo, ".git-hooks", "pre-commit.d", "README")
+	f.write(path, "touch \"$PWD/readme.ran\"\n")
+	require.NoError(t, os.Chmod(path, 0o644))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := f.hook(ctx, "pre-commit", f.env()).CombinedOutput()
+	require.Error(t, err, string(out))
+	require.NoFileExists(t, filepath.Join(f.repo, "readme.ran"))
+}
+
+func TestHookGlobalScriptWithoutShebangFailsClosed(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	// A truncated or broken global gitleaks script must block the commit.
+	f.write(filepath.Join(f.home, ".git-hooks", "pre-commit.d", "gitleaks"), "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := f.hook(ctx, "pre-commit", f.env()).CombinedOutput()
+	require.Error(t, err, string(out))
 }

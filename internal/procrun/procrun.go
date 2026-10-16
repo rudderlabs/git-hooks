@@ -33,14 +33,25 @@ func Run(ctx context.Context, argv []string, opt Options) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Env, cmd.Dir = opt.Env, opt.Dir
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = opt.Stdin, opt.Stdout, opt.Stderr
 	interactive := InForegroundJob()
-	if !interactive {
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	newCmd := func(argv []string) *exec.Cmd {
+		cmd := exec.Command(argv[0], argv[1:]...)
+		cmd.Env, cmd.Dir = opt.Env, opt.Dir
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = opt.Stdin, opt.Stdout, opt.Stderr
+		if !interactive {
+			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		}
+		return cmd
 	}
-	if err := cmd.Start(); err != nil {
+	cmd := newCmd(argv)
+	err := cmd.Start()
+	// A script without a #! line fails with ENOEXEC. Git and execvp run it
+	// with sh then, so hooks written that way work under plain git.
+	if errors.Is(err, syscall.ENOEXEC) {
+		cmd = newCmd(append([]string{"/bin/sh"}, argv...))
+		err = cmd.Start()
+	}
+	if err != nil {
 		return err
 	}
 	pid := cmd.Process.Pid
