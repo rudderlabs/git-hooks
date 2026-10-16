@@ -6,7 +6,7 @@ Git Hooks is a flexible and powerful tool for managing and executing Git hooks a
 
 Git Hooks must be configured as your Git hook manager (via `core.hooksPath`), but is designed to execute hooks from other tools in a hierarchical order:
 
-- **[Husky](https://typicode.github.io/husky/)**: Fully compatible with both modern (`.husky/<hook-name>`) and legacy (`.husky/_/<hook-name>`) Husky formats. Once git-hooks is configured, it will automatically detect and execute your Husky hooks. Your project-specific Husky hooks continue to work without modification.
+- **[Husky](https://typicode.github.io/husky/)**: Works with husky v7, v8 and v9. git-hooks runs each husky hook exactly once. Your husky hooks need no changes.
 
 - **[pre-commit](https://pre-commit.com/)**: Compatible with pre-commit framework. You can use pre-commit for project-specific hooks while using git-hooks for global hooks across all repositories.
 
@@ -102,7 +102,10 @@ This will scan the specified directory (or current directory if not specified) f
 
 - `--max-depth <num>` - Maximum directory depth to search (default: 10)
 - `--verbose` - Show detailed output
-- `--auto-fix` - Automatically remove local hooksPath overrides after confirmation
+- `--auto-fix` - Remove local hooksPath overrides after confirmation
+- `--yes`, `-y` - Skip the confirmation. Required with `--auto-fix` when stdin is not a terminal.
+
+Flags work before or after PATH. The command exits non-zero when it cannot remove an override.
 
 **Example:**
 
@@ -134,7 +137,24 @@ When a Git hook is triggered, Git Hooks executes hooks in the following order:
 
 1. Global hooks in `~/.git-hooks/<hook-name>.d/`
 2. Local repository hooks in `$GIT_DIR/.git-hooks/<hook-name>.d/`
-3. Husky hooks in `.husky/<hook-name>` (modern) or `.husky/_/<hook-name>` (legacy)
+3. The husky hook `.husky/<hook-name>`, once
 4. Standard Git hook in `$GIT_DIR/hooks/<hook-name>`
 
-This order ensures that you can have a cascading set of hooks, from the most global to the most specific, with Husky integration for projects that use it.
+A failing global hook stops the commit before any repository hook runs. gitleaks is a global hook.
+
+### Husky
+
+- husky v9 with `.husky/_/h` installed: git-hooks runs `.husky/_/<hook-name>`, husky's own wrapper.
+- husky v7/v8: git-hooks runs `sh .husky/<hook-name>` with `node_modules/.bin` on `PATH`. husky's own helper then loads `~/.huskyrc` and runs the hook with `sh -e`.
+- Otherwise: git-hooks loads `~/.config/husky/init.sh` and runs `sh -e .husky/<hook-name>` with `node_modules/.bin` on `PATH`. The exec bit does not matter.
+- git-hooks skips the husky hook with a warning when `HUSKY=0` is set, when the repository has neither `node_modules` nor a Yarn PnP file (`.pnp.cjs`), or when a v7/v8 hook sources a missing `.husky/_/husky.sh`. Global hooks still run. CI runs the same checks.
+
+### Timeout for repository hooks
+
+Steps 2 to 4 run with a timeout, so a hung hook cannot block git forever. `GIT_HOOKS_TIMEOUT` (default `10m`) kills the hook and its child processes after this time. `0` turns the timeout off.
+
+When git runs in a terminal, the hook runs in git's job, as before. Ctrl-C, Ctrl-Z, `fg`, `bg` and `kill %1` work as usual, and a hook can read `/dev/tty`. On timeout, git-hooks stops the hook and the processes below it. Known limits in a terminal: a background job that ignores Ctrl-C, or a process that detached from the hook, keeps running, as in earlier versions. The timeout also counts time while the job is stopped with Ctrl-Z.
+
+Without a terminal (IDEs, GUI apps, agents), each hook runs in its own process group. When a hook fails, times out or is canceled, git-hooks stops the whole group. After a successful hook, background jobs keep running.
+
+For `pre-push`, `pre-receive`, `post-receive`, `post-rewrite` and `reference-transaction`, git-hooks saves the input to a temporary file in `$TMPDIR`, `/tmp` or the git directory. If none can be written, the hook fails. With no stage for the hook, git-hooks does not read the input at all. A pre-push hook after gitleaks still reads the full list of refs. Other hooks share stdin as before.

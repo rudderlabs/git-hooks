@@ -4,7 +4,7 @@ TESTFILE    := _testok
 
 # go tools versions
 GOLANGCI=github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.5.0
-gofumpt=mvdan.cc/gofumpt@latest
+gofumpt=mvdan.cc/gofumpt@v0.11.0
 govulncheck=golang.org/x/vuln/cmd/govulncheck@latest
 goimports=golang.org/x/tools/cmd/goimports@latest
 
