@@ -58,10 +58,8 @@ func Resolve(repoRoot, hookName string, args, environ []string) Plan {
 	if (err != nil || !info.IsDir()) && !regularFile(filepath.Join(repoRoot, ".pnp.cjs")) && !regularFile(filepath.Join(repoRoot, ".pnp.js")) {
 		return Plan{Action: Skip, Reason: "Husky needs node_modules; run your package manager's install command"}
 	}
-	content, err := os.ReadFile(hook)
-	if err != nil {
-		return Plan{Action: Skip, Reason: "Cannot read Husky hook: " + err.Error()}
-	}
+	// A read error is not a skip: the shell then fails to open the hook and blocks the commit.
+	content, _ := os.ReadFile(hook)
 	legacy := legacySource.Match(content)
 	if legacy {
 		helperPath := filepath.Join(repoRoot, ".husky", "_", "husky.sh")
@@ -69,19 +67,27 @@ func Resolve(repoRoot, hookName string, args, environ []string) Plan {
 		if _, err := os.Lstat(helperPath); errors.Is(err, fs.ErrNotExist) {
 			return Plan{Action: Skip, Reason: "Missing .husky/_/husky.sh; run npm install or migrate to husky v9"}
 		}
-		info, err := os.Stat(helperPath)
-		// husky v9 leaves a deprecation stub here that never re-runs the hook with
-		// sh -e; only the real v7/v8 helper does. Anything odd (unreadable, not a
-		// small regular file) keeps the legacy path, so the hook runs and can fail.
-		if err == nil && info.Mode().IsRegular() && info.Size() < 1<<20 {
+		// Only the real v7/v8 helper re-runs the hook with sh -e. Anything else (the
+		// v9 deprecation stub, an unreadable file, a directory) gets the v9 shim, whose
+		// sh -e keeps a failing step fatal. Some shells source a directory as a no-op.
+		legacy = false
+		if info, err := os.Stat(helperPath); err == nil && info.Mode().IsRegular() && info.Size() < 1<<20 {
 			if helper, err := os.ReadFile(helperPath); err == nil {
-				legacy = bytes.Contains(helper, []byte("husky_skip_init"))
+				legacy = bytes.Contains(helper, []byte("husky_skip_init")) && bytes.Contains(helper, []byte(`sh -e "$0"`))
 			}
 		}
 	}
 	stub := filepath.Join(repoRoot, ".husky", "_", hookName)
 	if regularFile(filepath.Join(repoRoot, ".husky", "_", "h")) && regularFile(stub) {
 		return Plan{Action: Run, Argv: append([]string{"sh", stub}, args...), Env: slices.Clone(environ)}
+	}
+	if !legacy {
+		env := slices.DeleteFunc(slices.Clone(environ), func(e string) bool { return strings.HasPrefix(e, "husky_skip_init=") })
+		// As in husky v9's h, node_modules/.bin goes in after init.sh, which may reset PATH.
+		// It is absolute, unlike in h, so a hook that cds into a package still finds root tools.
+		// $0 is <root>/.husky/<hook>.
+		init := `i="${XDG_CONFIG_HOME:-$HOME/.config}/husky/init.sh"; [ -f "$i" ] && . "$i"; [ "${HUSKY-}" = "0" ] && exit 0; export PATH="${0%/.husky/*}/node_modules/.bin:$PATH"; exec sh -e "$0" "$@"`
+		return Plan{Action: Run, Argv: append([]string{"sh", "-c", init, hook}, args...), Env: env}
 	}
 	env := make([]string, 0, len(environ)+2)
 	var path string
@@ -102,12 +108,8 @@ func Resolve(repoRoot, hookName string, args, environ []string) Plan {
 		path = bin
 	}
 	env = append(env, "PATH="+path)
-	if legacy {
-		// The helper loads ~/.huskyrc before restarting the hook with sh -e.
-		return Plan{Action: Run, Argv: append([]string{"sh", hook}, args...), Env: env}
-	}
-	init := `i="${XDG_CONFIG_HOME:-$HOME/.config}/husky/init.sh"; [ -f "$i" ] && . "$i"; [ "${HUSKY-}" = "0" ] && exit 0; exec sh -e "$0" "$@"`
-	return Plan{Action: Run, Argv: append([]string{"sh", "-c", init, hook}, args...), Env: env}
+	// The helper loads ~/.huskyrc before restarting the hook with sh -e.
+	return Plan{Action: Run, Argv: append([]string{"sh", hook}, args...), Env: env}
 }
 
 func regularFile(path string) bool {

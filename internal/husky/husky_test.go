@@ -68,16 +68,12 @@ func TestResolveInstallLayouts(t *testing.T) {
 			}
 			plan := husky.Resolve(root, "pre-commit", nil, []string{"PATH=/usr/bin:/bin"})
 			require.Equal(t, husky.Run, plan.Action)
-			wantPath := "/usr/bin:/bin"
-			if layout == "node_modules/.bin" {
-				wantPath = filepath.Join(root, layout) + string(os.PathListSeparator) + wantPath
-			}
-			require.Contains(t, plan.Env, "PATH="+wantPath)
+			require.Equal(t, []string{"PATH=/usr/bin:/bin"}, plan.Env)
 			cmd := exec.Command(plan.Argv[0], plan.Argv[1:]...)
 			cmd.Dir, cmd.Env = root, plan.Env
 			output, err := cmd.CombinedOutput()
 			require.NoError(t, err, "%s", output)
-			require.Equal(t, wantPath+"\n", string(output))
+			require.Equal(t, filepath.Join(root, "node_modules/.bin")+":/usr/bin:/bin\n", string(output))
 		})
 	}
 }
@@ -225,11 +221,17 @@ func TestResolveFallback(t *testing.T) {
 			require.Empty(t, plan.Reason)
 			require.Equal(t, originalEnv, env)
 			wantEnv := []string{"MARKER=" + marker, "HUSKY=1"}
-			path := filepath.Join(root, "node_modules/.bin")
-			if len(tc.paths) > 0 && tc.paths[len(tc.paths)-1] != "" {
-				path += string(os.PathListSeparator) + tc.paths[len(tc.paths)-1]
+			if tc.helper {
+				path := filepath.Join(root, "node_modules/.bin")
+				if len(tc.paths) > 0 && tc.paths[len(tc.paths)-1] != "" {
+					path += string(os.PathListSeparator) + tc.paths[len(tc.paths)-1]
+				}
+				wantEnv = append(wantEnv, "PATH="+path)
+			} else {
+				for _, path := range tc.paths {
+					wantEnv = append(wantEnv, "PATH="+path)
+				}
 			}
-			wantEnv = append(wantEnv, "PATH="+path)
 			require.ElementsMatch(t, wantEnv, plan.Env)
 			require.NoFileExists(t, marker)
 			cmd := exec.Command(plan.Argv[0], plan.Argv[1:]...)
@@ -259,7 +261,7 @@ const legacyHelper = `if [ -z "$husky_skip_init" ]; then
 fi
 `
 
-const v9Init = `i="${XDG_CONFIG_HOME:-$HOME/.config}/husky/init.sh"; [ -f "$i" ] && . "$i"; [ "${HUSKY-}" = "0" ] && exit 0; exec sh -e "$0" "$@"`
+const v9Init = `i="${XDG_CONFIG_HOME:-$HOME/.config}/husky/init.sh"; [ -f "$i" ] && . "$i"; [ "${HUSKY-}" = "0" ] && exit 0; export PATH="${0%/.husky/*}/node_modules/.bin:$PATH"; exec sh -e "$0" "$@"`
 
 // v9Helper is Husky 9.1.7's runtime so the test exercises its real dispatch behavior.
 const v9Helper = `#!/usr/bin/env sh
@@ -475,4 +477,83 @@ func TestResolveDanglingHelperSymlinkStillRuns(t *testing.T) {
 	plan := husky.Resolve(root, "pre-commit", nil, []string{"HOME=" + t.TempDir(), "PATH=/usr/bin:/bin"})
 	// A broken helper must block the commit as before, not turn into a skip.
 	require.Equal(t, husky.Run, plan.Action)
+}
+
+func TestResolveUnreadableHookStillRuns(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("root reads any file")
+	}
+	root := t.TempDir()
+	writeFile(t, root, ".husky/pre-commit", "exit 0\n", 0o111)
+	require.NoError(t, os.Mkdir(filepath.Join(root, "node_modules"), 0o755))
+	plan := husky.Resolve(root, "pre-commit", nil, []string{"HOME=" + t.TempDir(), "PATH=/usr/bin:/bin"})
+	// A hook that cannot be read must block the commit, not turn into a skip.
+	require.Equal(t, husky.Run, plan.Action)
+	cmd := exec.Command(plan.Argv[0], plan.Argv[1:]...)
+	cmd.Dir, cmd.Env = root, plan.Env
+	require.Error(t, cmd.Run())
+}
+
+func TestResolveHelperDirectoryKeepsErrexit(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	// dash and zsh source a directory as a no-op, so only sh -e stops at false.
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".husky", "_", "husky.sh"), 0o755))
+	writeFile(t, root, ".husky/pre-commit", ". \"$(dirname -- \"$0\")/_/husky.sh\"\nfalse\necho after-false\n", 0o644)
+	require.NoError(t, os.Mkdir(filepath.Join(root, "node_modules"), 0o755))
+	plan := husky.Resolve(root, "pre-commit", nil, []string{"HOME=" + t.TempDir(), "PATH=/usr/bin:/bin"})
+	require.Equal(t, husky.Run, plan.Action)
+	cmd := exec.Command(plan.Argv[0], plan.Argv[1:]...)
+	cmd.Dir, cmd.Env = root, plan.Env
+	output, err := cmd.CombinedOutput()
+	require.Error(t, err, "%s", output)
+	require.NotContains(t, string(output), "after-false")
+}
+
+func TestResolveV9FallbackInitResetsPath(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	home := t.TempDir()
+	writeFile(t, home, ".config/husky/init.sh", "export PATH=/usr/bin:/bin\n", 0o644)
+	writeFile(t, root, "node_modules/.bin/lint-staged", "#!/bin/sh\necho linted\n", 0o755)
+	writeFile(t, root, ".husky/pre-commit", "lint-staged\n", 0o644)
+	plan := husky.Resolve(root, "pre-commit", nil, []string{"HOME=" + home, "PATH=/usr/bin:/bin"})
+	require.Equal(t, husky.Run, plan.Action)
+	cmd := exec.Command(plan.Argv[0], plan.Argv[1:]...)
+	cmd.Dir, cmd.Env = root, plan.Env
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, "%s", output)
+	require.Equal(t, "linted\n", string(output))
+}
+
+func TestResolveHelperWithMarkerButNoRestartKeepsErrexit(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	// The marker alone is not enough: this helper never restarts the hook with sh -e.
+	writeFile(t, root, ".husky/_/husky.sh", "# husky_skip_init\n", 0o644)
+	writeFile(t, root, ".husky/pre-commit", ". \"$(dirname -- \"$0\")/_/husky.sh\"\nfalse\necho after-false\n", 0o644)
+	require.NoError(t, os.Mkdir(filepath.Join(root, "node_modules"), 0o755))
+	plan := husky.Resolve(root, "pre-commit", nil, []string{"HOME=" + t.TempDir(), "PATH=/usr/bin:/bin"})
+	require.Equal(t, husky.Run, plan.Action)
+	cmd := exec.Command(plan.Argv[0], plan.Argv[1:]...)
+	cmd.Dir, cmd.Env = root, plan.Env
+	output, err := cmd.CombinedOutput()
+	require.Error(t, err, "%s", output)
+	require.NotContains(t, string(output), "after-false")
+}
+
+func TestResolveV9FallbackFindsRootBinFromSubdirectory(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeFile(t, root, "node_modules/.bin/lint-staged", "#!/bin/sh\necho linted\n", 0o755)
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "packages", "web"), 0o755))
+	writeFile(t, root, ".husky/pre-commit", "cd packages/web\nlint-staged\n", 0o644)
+	plan := husky.Resolve(root, "pre-commit", nil, []string{"HOME=" + t.TempDir(), "PATH=/usr/bin:/bin"})
+	require.Equal(t, husky.Run, plan.Action)
+	cmd := exec.Command(plan.Argv[0], plan.Argv[1:]...)
+	cmd.Dir, cmd.Env = root, plan.Env
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, "%s", output)
+	require.Equal(t, "linted\n", string(output))
 }

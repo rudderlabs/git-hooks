@@ -123,23 +123,50 @@ func TestHookFailsClosedWithoutHome(t *testing.T) {
 
 func TestHookStandardHookLinkedToWrapperDoesNotRecurse(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t)
-	counter := filepath.Join(f.repo, "global.count")
-	f.write(filepath.Join(f.home, ".git-hooks", "pre-commit.d", "count"), "#!/bin/sh\necho x >> "+counter+"\n")
-	wrapper := filepath.Join(f.home, ".git-hooks", "pre-commit")
-	f.write(wrapper, "#!/bin/sh\n\""+binary+"\" hook pre-commit \"$@\"\n")
-	require.NoError(t, os.MkdirAll(filepath.Join(f.repo, ".git", "hooks"), 0o755))
-	require.NoError(t, os.Symlink(wrapper, filepath.Join(f.repo, ".git", "hooks", "pre-commit")))
+	for _, tc := range []struct {
+		name      string
+		hooksPath bool // the wrapper sits in core.hooksPath outside HOME
+		link      func(oldname, newname string) error
+	}{
+		{name: "symlink", link: os.Symlink},
+		{name: "hard link", link: os.Link},
+		{name: "core.hooksPath outside HOME", hooksPath: true, link: os.Symlink},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			counter := filepath.Join(f.repo, "global.count")
+			f.write(filepath.Join(f.home, ".git-hooks", "pre-commit.d", "count"), "#!/bin/sh\necho x >> "+counter+"\n")
+			huskyCounter := filepath.Join(f.repo, "husky.count")
+			f.write(filepath.Join(f.repo, ".husky", "pre-commit"), "echo x >> "+huskyCounter+"\n")
+			require.NoError(t, os.Mkdir(filepath.Join(f.repo, "node_modules"), 0o755))
+			wrapper := filepath.Join(f.home, ".git-hooks", "pre-commit")
+			if tc.hooksPath {
+				dir := t.TempDir()
+				wrapper = filepath.Join(dir, "pre-commit")
+				cmd := exec.Command("git", "-C", f.repo, "config", "core.hooksPath", dir)
+				cmd.Env = f.env()
+				out, err := cmd.CombinedOutput()
+				require.NoError(t, err, string(out))
+			}
+			f.write(wrapper, "#!/bin/sh\n\""+binary+"\" hook pre-commit \"$@\"\n")
+			require.NoError(t, os.MkdirAll(filepath.Join(f.repo, ".git", "hooks"), 0o755))
+			require.NoError(t, tc.link(wrapper, filepath.Join(f.repo, ".git", "hooks", "pre-commit")))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	out, err := f.hook(ctx, "pre-commit", f.env()).CombinedOutput()
-	require.NoError(t, err, string(out))
-	require.NoError(t, ctx.Err(), "the hook must terminate on its own")
-	got, err := os.ReadFile(counter)
-	require.NoError(t, err)
-	require.Equal(t, 2, strings.Count(string(got), "x"), "outer run plus one nested run, then stop")
-	require.Contains(t, string(out), "calls git-hooks again and was skipped")
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			out, err := f.hook(ctx, "pre-commit", f.env()).CombinedOutput()
+			require.NoError(t, err, string(out))
+			require.NoError(t, ctx.Err(), "the hook must terminate on its own")
+			got, err := os.ReadFile(counter)
+			require.NoError(t, err)
+			require.Equal(t, 1, strings.Count(string(got), "x"), "a link to the wrapper must not start a nested run")
+			got, err = os.ReadFile(huskyCounter)
+			require.NoError(t, err)
+			require.Equal(t, 1, strings.Count(string(got), "x"), "husky runs once")
+			require.Contains(t, string(out), "calls git-hooks again and was skipped")
+		})
+	}
 }
 
 func TestHookKeepsStdinStreamingForProcReceive(t *testing.T) {

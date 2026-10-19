@@ -168,7 +168,7 @@ func executeHook(hookName string) error {
 	}
 
 	// 4. Standard Git hook for backwards compatibility.
-	return afterStage(executeStandardGitHook(ctx, hookName, args, repoStage))
+	return afterStage(executeStandardGitHook(ctx, hookName, args, home, repoStage))
 }
 
 type runner func(argv, env []string) error
@@ -224,7 +224,7 @@ func executeScriptsInDir(dir string, args []string, run runner) error {
 	return nil
 }
 
-func executeStandardGitHook(ctx context.Context, hookName string, args []string, run runner) error {
+func executeStandardGitHook(ctx context.Context, hookName string, args []string, home string, run runner) error {
 	path, ok, err := standardHookPath(ctx, hookName)
 	if err != nil || !ok {
 		return err
@@ -248,12 +248,31 @@ func executeStandardGitHook(ctx context.Context, hookName string, args []string,
 	if err != nil {
 		return fmt.Errorf("resolving %s: %w", path, err)
 	}
-	if os.Getenv(runningStandardHookEnv) == resolved {
-		// A .git/hooks file that links to the global wrapper would call us forever.
+	// A link to the global wrapper would rerun every stage, husky included, before
+	// the nested run reaches the env check below. A copy still hits that check.
+	if isGlobalWrapper(ctx, info, home, hookName) || os.Getenv(runningStandardHookEnv) == resolved {
 		fmt.Fprintf(os.Stderr, "git-hooks: WARNING: %s calls git-hooks again and was skipped\n", path)
 		return nil
 	}
 	return run(append([]string{path}, args...), append(os.Environ(), runningStandardHookEnv+"="+resolved))
+}
+
+// isGlobalWrapper reports whether the hook file is the wrapper git just ran. It
+// checks the effective core.hooksPath and ~/.git-hooks, because HOME at run
+// time can differ from the HOME that config wrote into core.hooksPath.
+// SameFile also matches hard links.
+func isGlobalWrapper(ctx context.Context, hook fs.FileInfo, home, hookName string) bool {
+	dirs := []string{filepath.Join(home, ".git-hooks")}
+	if out, err := exec.CommandContext(ctx, "git", "config", "--type=path", "core.hooksPath").Output(); err == nil {
+		dirs = append(dirs, strings.TrimSuffix(string(out), "\n")) // git keeps trailing spaces
+	}
+	for _, dir := range dirs {
+		// git runs hooks from the worktree root, so a relative hooksPath resolves against the cwd.
+		if info, err := os.Stat(filepath.Join(dir, hookName)); err == nil && os.SameFile(hook, info) {
+			return true
+		}
+	}
+	return false
 }
 
 // standardHookPath returns <common git dir>/hooks/<hook>. It must not use
